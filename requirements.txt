@@ -1,3 +1,6 @@
 asyncssh>=2.14,<3.0
-PySide2>=5.15,<6.0
+# PySide6 必须带 QtWebEngine 子模块（pip 的 PySide6 wheel 默认就含）。
+# Qt 6 的 QtWebEngine 同样需要 Chromium 子进程能识别路径，故安装 / 运行
+# 都要在 ASCII 路径下完成（venv 路径里不能含中文）。
+PySide6>=6.5,<7.0
 qasync>=0.27

@@ -10,8 +10,9 @@
   - 「中心 offset / 活动范围」可在界面里改并保存到 motor_config.json，下次启动自动加载
   - 命令 / 响应日志
   - 「去使能」=> 软急停：取消在飞的运动命令并立即发 #1k
+  - 左侧 3D 视图（Qt Quick 3D，单进程，QML 场景在 viewer/Viewer.qml）实时跟随 ActPos 平移升降台
 
-依赖：asyncssh, PySide2, qasync
+依赖：asyncssh, PySide6（含 QtQuick3D / QtQuickWidgets）, qasync
 用法：python gui_motor1.py
 """
 
@@ -23,29 +24,48 @@ import time
 from pathlib import Path
 
 # --- Qt 平台初始化（必须在 QApplication 之前完成） ---
-# 1) Ubuntu 22 + Gnome 默认 Wayland。PySide2 默认想用 xcb，但缺 libxcb-xinerama 起不来。
+# 1) Ubuntu 22 + Gnome 默认 Wayland。Qt 默认想用 xcb，但缺 libxcb-xinerama 起不来。
 #    会话是 Wayland 时优先用 wayland 插件（这个的 system 依赖在本机已经齐全）。
 if "QT_QPA_PLATFORM" not in os.environ:
     if (os.environ.get("XDG_SESSION_TYPE") == "wayland"
             or os.environ.get("WAYLAND_DISPLAY")):
         os.environ["QT_QPA_PLATFORM"] = "wayland"
 
-# 2) 部分 PySide2 wheel 不自动注册插件目录（QT_PLUGIN_PATH 空，libraryPaths 空），
-#    Qt 跑去 /usr/bin/platforms 找插件然后崩。强制指向 venv 里的 plugins。
-import PySide2
-_QT_PLUGIN_DIR = Path(PySide2.__file__).resolve().parent / "Qt" / "plugins"
+# 2) PySide6 的 wheel 一般已自带 Qt 子目录（PySide6/Qt6/... 或 PySide6/Qt/...），
+#    多数情况下不需要手工挂插件路径。但有些 wheel 仍然不主动注册，所以兜底。
+import PySide6
+_PYSIDE6_ROOT = Path(PySide6.__file__).resolve().parent
+# PySide6 6.3+ 的 wheel 把 Qt 文件挪到了 Qt6/ 目录；老版本可能还是 Qt/。两个都试。
+for _qt_subdir in ("Qt6", "Qt"):
+    _QT_ROOT = _PYSIDE6_ROOT / _qt_subdir
+    if (_QT_ROOT / "plugins").is_dir():
+        break
+else:
+    _QT_ROOT = _PYSIDE6_ROOT / "Qt6"   # 兜底
+
+_QT_PLUGIN_DIR = _QT_ROOT / "plugins"
 if _QT_PLUGIN_DIR.is_dir():
     os.environ.setdefault("QT_PLUGIN_PATH", str(_QT_PLUGIN_DIR))
     os.environ.setdefault("QT_QPA_PLATFORM_PLUGIN_PATH",
                           str(_QT_PLUGIN_DIR / "platforms"))
 
-from PySide2.QtCore import Qt
-from PySide2.QtGui import QDoubleValidator
-from PySide2.QtWidgets import (
+# 3) Quick 3D / QML 的 import path：PySide6 wheel 把 QtQuick3D / Helpers /
+#    AssetUtils 都放在 Qt(6)/qml/ 下，让 QML 引擎能找到 RuntimeLoader 等元素。
+_QML_DIR = _QT_ROOT / "qml"
+if _QML_DIR.is_dir():
+    os.environ.setdefault("QML2_IMPORT_PATH", str(_QML_DIR))
+    os.environ.setdefault("QML_IMPORT_PATH", str(_QML_DIR))
+
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QDoubleValidator
+from PySide6.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QLineEdit, QVBoxLayout,
     QHBoxLayout, QGridLayout, QGroupBox, QPlainTextEdit, QMessageBox,
+    QSplitter, QSlider, QDoubleSpinBox, QComboBox, QMainWindow,
 )
 from qasync import QEventLoop, asyncSlot
+
+from viewer3d import Viewer3DWidget
 
 from pmac import PMAC, PmacError, STATUS_FIELDS
 
@@ -55,10 +75,19 @@ POLL_S = 0.5
 
 # ====== 可配置参数（持久化到 motor_config.json，在界面里改并保存） ======
 CONFIG_PATH = Path(__file__).resolve().parent / "motor_config.json"
+VIEWER_QML  = Path(__file__).resolve().parent / "viewer" / "Viewer.qml"
+VIEWER_GLB  = Path(__file__).resolve().parent / "viewer" / "model.glb"
 DEFAULT_CONFIG = {
     "center": 17.0,   # 固件 #1J=0 命令对应的物理 ActPos（offset）
     "range":  6.0,    # 中心两侧各允许的范围（输入域 ±range，物理域 center±range）
+    # —— 3D 可视化（不影响电机命令，只控制升降台动画的视觉夸张） ——
+    "viz_mm_per_unit": 15.0,  # 1 unit → 多少 mm 的视觉位移（夸张倍率，纯视觉）
+    "viz_axis":        "x",   # 'x' | 'y' | 'z'
+    "viz_direction":   1,     # +1 | -1
 }
+_FLOAT_KEYS = ("center", "range", "viz_mm_per_unit")
+_INT_KEYS   = ("viz_direction",)
+_STR_KEYS   = ("viz_axis",)
 
 
 def load_config() -> dict:
@@ -66,18 +95,26 @@ def load_config() -> dict:
     try:
         with open(CONFIG_PATH, encoding="utf-8") as f:
             disk = json.load(f)
-        for k in cfg:
+        for k in _FLOAT_KEYS:
             if k in disk:
                 cfg[k] = float(disk[k])
+        for k in _INT_KEYS:
+            if k in disk:
+                cfg[k] = int(disk[k])
+        for k in _STR_KEYS:
+            if k in disk and disk[k] in ("x", "y", "z"):
+                cfg[k] = disk[k]
     except (OSError, json.JSONDecodeError, ValueError, TypeError):
         pass
     return cfg
 
 
 def save_config(cfg: dict) -> None:
+    payload = {k: float(cfg[k]) for k in _FLOAT_KEYS}
+    payload.update({k: int(cfg[k])   for k in _INT_KEYS})
+    payload.update({k: str(cfg[k])   for k in _STR_KEYS})
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump({"center": float(cfg["center"]),
-                   "range":  float(cfg["range"])}, f, indent=2)
+        json.dump(payload, f, indent=2)
         f.write("\n")
 
 _VAL_STYLE = ("font-family:Consolas,'Courier New',monospace;"
@@ -90,8 +127,6 @@ _BAD_BG = "background:#c0392b;color:white;"
 class MotorPanel(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(f"PMAC Motor {MOTOR} Control")
-        self.resize(820, 720)
 
         self.pmac = PMAC()
         self._poll_task: asyncio.Task | None = None
@@ -99,9 +134,45 @@ class MotorPanel(QWidget):
         self._last_status: dict[str, float | None] = {}
         self.cfg = load_config()
 
+        # 由 MainWindow 注入；未就绪时 _push_viewer_*() 直接返回
+        self._viewer: Viewer3DWidget | None = None
+
         self._build_ui()
         self._apply_config_to_motion_ui()   # 首次同步标签 / validator
         self._set_connected(False)
+
+    # ------------------------------------------- viewer 桥接
+
+    def attach_viewer(self, viewer: Viewer3DWidget):
+        """MainWindow 把 Viewer3DWidget 注入进来。QML Ready 后回调把配置 + 最新位置重发一次。"""
+        self._viewer = viewer
+        viewer.ready_changed.connect(self._on_viewer_ready)
+        # 重要：QQuickWidget.setSource 是同步的，statusChanged(Ready) 可能已经
+        # 在 Viewer3DWidget.__init__ 里就发完了；这时我们才 connect 是接不到的。
+        # 检查一下，如果已经 Ready，立刻手动调一次回调，把初始配置推下去。
+        if viewer.is_ready:
+            self._on_viewer_ready(True)
+
+    def _on_viewer_ready(self, ready: bool):
+        if not ready:
+            return
+        self._log("3D viewer 已就绪")
+        self._push_viewer_config()
+        last = self._last_status.get("ActPos")
+        if isinstance(last, (int, float)):
+            self._push_viewer_pos(float(last))
+
+    def _push_viewer_config(self):
+        if self._viewer is None:
+            return
+        # Viewer3DWidget 在 QML Ready 前会把这几个 set 缓存住，Ready 后统一回放
+        self._viewer.set_center(self.cfg["center"])
+        self._viewer.set_scale(self.cfg["viz_mm_per_unit"])
+        self._viewer.set_axis(self.cfg["viz_axis"], int(self.cfg["viz_direction"]))
+
+    def _push_viewer_pos(self, phys: float):
+        if self._viewer is not None:
+            self._viewer.set_motor_position(phys)
 
     # 几个根据 cfg 计算的常用边界
     @property
@@ -163,6 +234,48 @@ class MotorPanel(QWidget):
         cf.setColumnStretch(1, 1)
         cf.setColumnStretch(3, 1)
         root.addWidget(cfg_box)
+
+        # --- 3D 显示比例 / 方向（不影响电机命令，只调左边动画的视觉夸张程度）
+        viz_box = QGroupBox("3D 显示  (只影响左边动画，不影响电机命令)")
+        vg = QGridLayout(viz_box)
+
+        # mm/unit 同时给一个 spinbox（精确）和 slider（拖着看）
+        self.viz_scale_spin = QDoubleSpinBox()
+        self.viz_scale_spin.setRange(0.1, 200.0)
+        self.viz_scale_spin.setDecimals(2)
+        self.viz_scale_spin.setSingleStep(0.5)
+        self.viz_scale_spin.setSuffix(" mm/unit")
+        self.viz_scale_spin.setValue(self.cfg["viz_mm_per_unit"])
+
+        self.viz_scale_slider = QSlider(Qt.Horizontal)
+        # slider 用 int (0.1 mm 步长)；1 unit → 0.1~200 mm → slider 1~2000
+        self.viz_scale_slider.setRange(1, 2000)
+        self.viz_scale_slider.setValue(int(round(self.cfg["viz_mm_per_unit"] * 10)))
+
+        # 拉的时候同步 spinbox；改 spinbox 时反向同步 slider；任何一个变都推到 viewer + 写 cfg
+        self._viz_sync_lock = False
+        self.viz_scale_slider.valueChanged.connect(self._on_viz_slider)
+        self.viz_scale_spin.valueChanged.connect(self._on_viz_spin)
+
+        # 运动轴 + 正反方向
+        self.viz_axis_combo = QComboBox()
+        self.viz_axis_combo.addItems(["x", "y", "z"])
+        self.viz_axis_combo.setCurrentText(self.cfg["viz_axis"])
+        self.viz_axis_combo.currentTextChanged.connect(self._on_viz_axis)
+
+        self.viz_dir_btn = QPushButton()
+        self.viz_dir_btn.setCheckable(False)
+        self._refresh_viz_dir_label()
+        self.viz_dir_btn.clicked.connect(self._on_viz_flip_dir)
+
+        vg.addWidget(QLabel("显示比例:"), 0, 0, alignment=Qt.AlignRight)
+        vg.addWidget(self.viz_scale_slider, 0, 1)
+        vg.addWidget(self.viz_scale_spin, 0, 2)
+        vg.addWidget(QLabel("运动轴:"), 1, 0, alignment=Qt.AlignRight)
+        vg.addWidget(self.viz_axis_combo, 1, 1)
+        vg.addWidget(self.viz_dir_btn, 1, 2)
+        vg.setColumnStretch(1, 1)
+        root.addWidget(viz_box)
 
         # --- EtherCAT
         ecat_box = QGroupBox("EtherCAT")
@@ -263,6 +376,8 @@ class MotorPanel(QWidget):
             f"→ 物理域 [{self.phys_min}, {self.phys_max}]    "
             f"配置文件: {CONFIG_PATH}"
         )
+        # center 变了 → 3D viewer 的归位点也得跟着变
+        self._push_viewer_config()
         # 状态面板的 ActPos 显示带 center 换算，刷新一下
         if self._last_status:
             self._render_status(self._last_status)
@@ -286,6 +401,62 @@ class MotorPanel(QWidget):
             return
         self._apply_config_to_motion_ui()
         self._log(f"配置已保存到 {CONFIG_PATH.name}：center={new_center}, range=±{new_range}")
+
+    # ------------------------------------ 3D 显示控件回调
+
+    def _refresh_viz_dir_label(self):
+        self.viz_dir_btn.setText(f"方向：{'+' if self.cfg['viz_direction'] > 0 else '-'}（点击翻转）")
+
+    def _on_viz_slider(self, v: int):
+        if self._viz_sync_lock:
+            return
+        mm = v / 10.0
+        self._viz_sync_lock = True
+        self.viz_scale_spin.setValue(mm)
+        self._viz_sync_lock = False
+        self.cfg["viz_mm_per_unit"] = mm
+        if self._viewer is not None:
+            self._viewer.set_scale(mm)
+        self._save_cfg_silently()
+        self._repush_pos()
+
+    def _on_viz_spin(self, mm: float):
+        if self._viz_sync_lock:
+            return
+        self._viz_sync_lock = True
+        self.viz_scale_slider.setValue(int(round(mm * 10)))
+        self._viz_sync_lock = False
+        self.cfg["viz_mm_per_unit"] = mm
+        if self._viewer is not None:
+            self._viewer.set_scale(mm)
+        self._save_cfg_silently()
+        self._repush_pos()
+
+    def _on_viz_axis(self, axis: str):
+        self.cfg["viz_axis"] = axis
+        if self._viewer is not None:
+            self._viewer.set_axis(axis, int(self.cfg["viz_direction"]))
+        self._save_cfg_silently()
+        self._repush_pos()
+
+    def _on_viz_flip_dir(self):
+        self.cfg["viz_direction"] = -int(self.cfg["viz_direction"])
+        self._refresh_viz_dir_label()
+        if self._viewer is not None:
+            self._viewer.set_axis(self.cfg["viz_axis"], int(self.cfg["viz_direction"]))
+        self._save_cfg_silently()
+        self._repush_pos()
+
+    def _repush_pos(self):
+        v = self._last_status.get("ActPos")
+        if isinstance(v, (int, float)):
+            self._push_viewer_pos(float(v))
+
+    def _save_cfg_silently(self):
+        try:
+            save_config(self.cfg)
+        except OSError:
+            pass
 
     # ------------------------------------------------------------ state
 
@@ -530,6 +701,7 @@ class MotorPanel(QWidget):
                 # 物理读数 + 相对中心换算
                 lbl.setText(f"{val:+.6f}   (相对中心 {val - self.cfg['center']:+.6f})")
                 lbl.setStyleSheet(_VAL_STYLE)
+                self._push_viewer_pos(float(val))
             elif name == "ActVel":
                 lbl.setText(f"{val:+.6f}")
                 lbl.setStyleSheet(_VAL_STYLE)
@@ -552,6 +724,49 @@ class MotorPanel(QWidget):
         super().closeEvent(ev)
 
 
+class MainWindow(QMainWindow):
+    """横向 QSplitter：左边 3D 视图（Qt Quick 3D），右边电机控制面板。
+    左侧可以拉到 0 折叠，省 GPU。
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle(f"PMAC Motor {MOTOR} Control + 3D Preview")
+        self.resize(1500, 820)
+
+        self.panel = MotorPanel()
+
+        if VIEWER_QML.is_file() and VIEWER_GLB.is_file():
+            self.viewer = Viewer3DWidget(VIEWER_QML, VIEWER_GLB)
+            self.panel.attach_viewer(self.viewer)
+            left_widget = self.viewer
+        else:
+            # 兜底：QML / GLB 丢了就显示一段文字，电机控制依然可用
+            from PySide6.QtWidgets import QPlainTextEdit
+            missing = QPlainTextEdit()
+            missing.setReadOnly(True)
+            missing.setStyleSheet("background:#222;color:#f88;font-family:Consolas,monospace;")
+            missing.setPlainText(
+                f"3D 视图缺少资源：\n  Viewer.qml: {VIEWER_QML}  exists={VIEWER_QML.is_file()}\n"
+                f"  model.glb : {VIEWER_GLB}  exists={VIEWER_GLB.is_file()}"
+            )
+            left_widget = missing
+
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.addWidget(left_widget)
+        splitter.addWidget(self.panel)
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 2)
+        splitter.setSizes([900, 600])
+        splitter.setChildrenCollapsible(True)   # 想隐藏 3D 就一拉到底
+        self.setCentralWidget(splitter)
+
+    def closeEvent(self, ev):
+        # 让 MotorPanel 的清理逻辑跑一遍
+        self.panel.close()
+        super().closeEvent(ev)
+
+
 def main():
     app = QApplication(sys.argv)
     loop = QEventLoop(app)
@@ -559,7 +774,7 @@ def main():
     quit_ev = asyncio.Event()
     app.aboutToQuit.connect(quit_ev.set)
     with loop:
-        w = MotorPanel()
+        w = MainWindow()
         w.show()
         loop.run_until_complete(quit_ev.wait())
 
