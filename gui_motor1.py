@@ -613,15 +613,7 @@ class MotorPanel(QWidget):
             self._log(f"范围超限: {err.splitlines()[0]}")
             await self._warn("范围超限", err)
             return
-        phys = pos + self.cfg["center"]
-        if not await self._confirm(
-                "绝对移动",
-                f"将发送 #{MOTOR}J={pos}\n\n"
-                f"⚠️  绝对输入 {pos:+}（相对中心 {self.cfg['center']}）\n"
-                f"    预期物理读数收敛到 ≈ {phys}\n"
-                f"    允许物理范围 [{self.phys_min}, {self.phys_max}]\n\n"
-                f"请现场确认安全。"):
-            return
+        # 范围内直接发，不再每次弹窗确认（只有超限才会上面 _warn 拦下）
         await self._run(f"#{MOTOR}J={pos}", self.pmac.motor_move_abs, MOTOR, pos)
 
     @asyncSlot()
@@ -639,15 +631,7 @@ class MotorPanel(QWidget):
             self._log(f"范围超限: {err.splitlines()[0]}")
             await self._warn("范围超限", err)
             return
-        cur = self._current_pos()
-        if not await self._confirm(
-                "相对移动",
-                f"将发送 #{MOTOR}j:{delta}\n\n"
-                f"⚠️  当前物理 {cur:.6f}，增量 {delta:+}\n"
-                f"    落点物理 ≈ {cur + delta:.6f}\n"
-                f"    允许物理范围 [{self.phys_min}, {self.phys_max}]\n\n"
-                f"请现场确认安全。"):
-            return
+        # 范围内直接发，不再每次弹窗确认（只有超限才会上面 _warn 拦下）
         await self._run(f"#{MOTOR}j:{delta}", self.pmac.motor_move_rel, MOTOR, delta)
 
     # ------------------------------------------------------------ workers

@@ -126,8 +126,9 @@ Item {
             var dy = m.y - lastY;
             lastX = m.x;
             lastY = m.y;
-            root.camYaw   += dx * 0.35;
-            root.camPitch  = Math.max(-89, Math.min(89, root.camPitch + dy * 0.35));
+            // 鼠标往右拖，模型应跟手往右转 → camYaw 减；往下拖同理。两个都取负号。
+            root.camYaw   -= dx * 0.35;
+            root.camPitch  = Math.max(-89, Math.min(89, root.camPitch - dy * 0.35));
         }
         onWheel: (w) => {
             var f = (w.angleDelta.y > 0) ? 0.88 : 1.136;

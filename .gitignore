@@ -1,0 +1,14 @@
+# Python 编译产物
+__pycache__/
+*.pyc
+
+# 运行时本机配置（offset/range 默认值已固化在 gui_motor1.py 的 DEFAULT_CONFIG，
+# 此文件只是本机覆盖，会随显示比例滑条等改动频繁变化，不进版本库）
+motor_config.json
+
+# 自测截图产物（snap.py 渲染出来的临时 PNG）
+_*.png
+
+# 虚拟环境
+venv/
+.venv/
