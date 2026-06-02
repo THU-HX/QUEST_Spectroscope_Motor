@@ -43,10 +43,10 @@ if _QML_DIR.is_dir():
     os.environ.setdefault("QML_IMPORT_PATH", str(_QML_DIR))
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QDoubleValidator, QFont, QColor
+from PySide6.QtGui import QDoubleValidator, QFont, QColor, QShortcut, QKeySequence
 from PySide6.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QLineEdit, QVBoxLayout,
-    QHBoxLayout, QGridLayout, QGroupBox, QPlainTextEdit, QMessageBox,
+    QHBoxLayout, QGridLayout, QGroupBox, QListWidget, QListWidgetItem, QMessageBox,
     QSplitter, QDoubleSpinBox, QComboBox, QMainWindow, QTabWidget,
     QScrollArea, QSizePolicy, QTableWidget, QTableWidgetItem, QHeaderView,
     QAbstractItemView,
@@ -67,6 +67,27 @@ _OK_BG = "background:#3fa84a;color:white;"
 _BAD_BG = "background:#c0392b;color:white;"
 _GREEN = QColor("#3fa84a")
 _RED = QColor("#c0392b")
+
+
+def fnum(x, dec: int = 5) -> str:
+    """最多 dec 位小数，去掉尾随 0：17→'17'，0.1→'0.1'，0.00001→'0.00001'，
+    2000000→'2000000'（不走科学计数）。None→'--'。"""
+    if x is None:
+        return "--"
+    s = f"{float(x):.{dec}f}"
+    if "." in s:
+        s = s.rstrip("0").rstrip(".")
+    if s in ("-0", "-", ""):
+        s = "0"
+    return s
+
+
+def fsign(x, dec: int = 5) -> str:
+    """带符号：+0.3 / -0.4 / 0（恰好为 0 时不带符号）。"""
+    s = fnum(x, dec)
+    if s != "0" and not s.startswith("-"):
+        s = "+" + s
+    return s
 
 
 class MotorControl(QGroupBox):
@@ -152,10 +173,10 @@ class MotorControl(QGroupBox):
         # offset/range 配置
         cf = QGridLayout()
         cv = QDoubleValidator(self); cv.setNotation(QDoubleValidator.StandardNotation)
-        self.center_input = QLineEdit(f"{self.center:g}")
+        self.center_input = QLineEdit(fnum(self.center))
         self.center_input.setValidator(cv)
         rv = QDoubleValidator(0.0, 1e12, 6, self); rv.setNotation(QDoubleValidator.StandardNotation)
-        self.range_input = QLineEdit(f"{self.half:g}")
+        self.range_input = QLineEdit(fnum(self.half))
         self.range_input.setValidator(rv)
         self.btn_save = QPushButton("保存")
         self.btn_save.clicked.connect(self._on_save_cfg)
@@ -177,7 +198,7 @@ class MotorControl(QGroupBox):
     def _refresh_domain(self):
         self.abs_validator.setRange(self.abs_min, self.abs_max, 6)
         self.abs_input.setPlaceholderText(
-            f"{self.abs_min:g} ~ {self.abs_max:g}  (0→物理 {self.center:g})"
+            f"{fnum(self.abs_min)} ~ {fnum(self.abs_max)}  (0→物理 {fnum(self.center)})"
         )
         if self._last_status:
             self._render(self._last_status)
@@ -196,7 +217,7 @@ class MotorControl(QGroupBox):
         self.cfg["range"] = r
         self.ctrl.save_cfg()
         self._refresh_domain()
-        self.ctrl.log(f"电机{self.motor} 配置已存：offset={c:g} 范围=±{r:g}")
+        self.ctrl.log(f"电机{self.motor} 配置已存：offset={fnum(c)} 范围=±{fnum(r)}")
         # 电机 5 的 center 影响 3D 归位
         self.ctrl.on_motor_cfg_changed(self.motor)
 
@@ -223,8 +244,8 @@ class MotorControl(QGroupBox):
             phys = pos + self.center
             await self.ctrl.warn(
                 "范围超限",
-                f"电机{self.motor} 绝对目标 {pos:g} 超出 [{self.abs_min:g}, {self.abs_max:g}]\n"
-                f"（对应物理 {phys:g}，应在 [{self.phys_min:g}, {self.phys_max:g}]）\n\n已拒绝。")
+                f"电机{self.motor} 绝对目标 {fnum(pos)} 超出 [{fnum(self.abs_min)}, {fnum(self.abs_max)}]\n"
+                f"（对应物理 {fnum(phys)}，应在 [{fnum(self.phys_min)}, {fnum(self.phys_max)}]）\n\n已拒绝。")
             return
         await self.ctrl.run(f"#{self.motor}j={pos}", self.ctrl.pmac.motor_move_abs, self.motor, pos)
 
@@ -246,8 +267,8 @@ class MotorControl(QGroupBox):
         if not (self.phys_min <= target <= self.phys_max):
             await self.ctrl.warn(
                 "范围超限",
-                f"电机{self.motor} 当前物理 {cur:g}，增量 {delta:g}，落点 {target:g}\n"
-                f"超出 [{self.phys_min:g}, {self.phys_max:g}]\n\n已拒绝。")
+                f"电机{self.motor} 当前物理 {fnum(cur)}，增量 {fnum(delta)}，落点 {fnum(target)}\n"
+                f"超出 [{fnum(self.phys_min)}, {fnum(self.phys_max)}]\n\n已拒绝。")
             return
         await self.ctrl.run(f"#{self.motor}j:{delta}", self.ctrl.pmac.motor_move_rel, self.motor, delta)
 
@@ -280,10 +301,10 @@ class MotorControl(QGroupBox):
             if val is None:
                 lbl.setText("--"); lbl.setStyleSheet(_VAL_STYLE); continue
             if name == "ActPos":
-                lbl.setText(f"{val:.4g}  (相对中心 {val - self.center:+.4g})")
+                lbl.setText(f"{fnum(val)}  (相对中心 {fsign(val - self.center)})")
                 lbl.setStyleSheet(_VAL_STYLE)
             elif name == "ActVel":
-                lbl.setText(f"{val:.4g}"); lbl.setStyleSheet(_VAL_STYLE)
+                lbl.setText(fnum(val)); lbl.setStyleSheet(_VAL_STYLE)
             else:
                 iv = int(val)
                 lbl.setText(str(iv))
@@ -361,9 +382,8 @@ class OverviewTab(QWidget):
             s = st.get(m)
             if not s:
                 continue
-            ap, av = s.get("ActPos"), s.get("ActVel")
-            self._set(r, 2, "--" if ap is None else f"{ap:.5g}")
-            self._set(r, 3, "--" if av is None else f"{av:.5g}")
+            self._set(r, 2, fnum(s.get("ActPos")))
+            self._set(r, 3, fnum(s.get("ActVel")))
             for c, key in ((4, "AmpEna"), (5, "AmpFault"), (6, "SoftLimit")):
                 v = s.get(key)
                 if v is None:
@@ -555,16 +575,19 @@ class MainWindow(QMainWindow):
         # 日志
         logbox = QGroupBox("日志")
         lb = QVBoxLayout(logbox)
-        self.logw = QPlainTextEdit()
-        self.logw.setReadOnly(True)
-        self.logw.setMaximumBlockCount(500)
+        # 日志用 QListWidget：一行一项，行命中测试按整行算，任何分辨率/缩放下
+        # 鼠标选中都不会差一行（不像富文本控件靠像素行高做命中测试）。
+        # 支持点拖多选 + Ctrl+C 复制选中行。
+        self.logw = QListWidget()
+        self.logw.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.logw.setUniformItemSizes(True)
         self.logw.setMaximumHeight(140)
-        # 字体走 setFont 而不是 stylesheet：stylesheet 字体会让文档布局与
-        # 命中测试用不同 metric，导致鼠标选中位置和实际差一行。
-        lf = QFont("Consolas")
+        lf = QFont("DejaVu Sans Mono")
         lf.setStyleHint(QFont.Monospace)
         lf.setPointSize(10)
         self.logw.setFont(lf)
+        _cp = QShortcut(QKeySequence.Copy, self.logw)
+        _cp.activated.connect(self._copy_log)
         lb.addWidget(self.logw)
         root.addWidget(logbox)
 
@@ -572,7 +595,16 @@ class MainWindow(QMainWindow):
 
     # ---------------- 公共接口（给 MotorControl/DeviceTab 调） ----------------
     def log(self, msg: str):
-        self.logw.appendPlainText(f"[{time.strftime('%H:%M:%S')}] {msg}")
+        self.logw.addItem(QListWidgetItem(f"[{time.strftime('%H:%M:%S')}] {msg}"))
+        self.logw.scrollToBottom()
+        # 软上限：行数过多时砍掉最旧的
+        while self.logw.count() > 500:
+            self.logw.takeItem(0)
+
+    def _copy_log(self):
+        items = self.logw.selectedItems()
+        if items:
+            QApplication.clipboard().setText("\n".join(i.text() for i in items))
 
     def save_cfg(self):
         try:
