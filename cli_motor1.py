@@ -71,7 +71,7 @@ async def cmd_disable(_args):
 
 async def cmd_move_abs(args):
     async with PMAC() as p:
-        print(f"→ #{MOTOR}J={args.pos}  (大写 J = jog 到绝对位置；小写 j= 是速度 jog，慎用)")
+        print(f"→ #{MOTOR}j={args.pos}  (v1.2：小写 j= 是绝对移动)")
         print(await p.motor_move_abs(MOTOR, args.pos))
 
 

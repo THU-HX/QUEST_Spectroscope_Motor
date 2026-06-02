@@ -1,10 +1,10 @@
-"""新协议下的 PMAC SSH+gpascii 客户端（读 + 写）。
+"""PMAC SSH+gpascii 客户端（读 + 写），对应 控制协议v1.2.md。
 
-支持的命令族（参考 tests/控制协议.md）:
-  - 状态读: Motor[n].ActPos / ActVel / AmpEna / AmpFault / PlusLimit / MinusLimit
+支持的命令族:
+  - 状态读: Motor[n].ActPos / ActVel / AmpEna / AmpFault / SoftLimit
   - EtherCAT 使能: ECAT[0].enable
   - 电机使能/去使能: #nj/ / #nk
-  - 绝对/相对运动: #nj=xx / #nj:xx
+  - 绝对/相对运动: #nj=xx / #nj:xx   （v1.2 确认绝对用小写 j=）
 
 只支持单机 192.168.0.200。要换地址临时改 HOST 即可。
 """
@@ -127,9 +127,25 @@ class PMAC:
         return {n: parsed.get(n) for n in names}
 
     async def motor_status(self, motor: int) -> dict[str, float | None]:
-        """返回 {ActPos, ActVel, AmpEna, AmpFault, PlusLimit, MinusLimit}。"""
+        """返回单个电机 {ActPos, ActVel, AmpEna, AmpFault, SoftLimit}。"""
         raw = await self.read_vars(status_vars(motor))
         return {f: raw[f"Motor[{motor}].{f}"] for f in STATUS_FIELDS}
+
+    async def motor_status_many(
+        self, motors: list[int]
+    ) -> dict[int, dict[str, float | None]]:
+        """一次 gpascii 读多台电机的状态，返回 {motor: {field: value}}。
+
+        把所有 motor×field 拼成一行批量读，比逐台读快很多（轮询全 8 台时很关键）。
+        """
+        names: list[str] = []
+        for m in motors:
+            names += status_vars(m)
+        raw = await self.read_vars(names)
+        return {
+            m: {f: raw[f"Motor[{m}].{f}"] for f in STATUS_FIELDS}
+            for m in motors
+        }
 
     async def ecat_enable(self) -> list[str]:
         """ECAT[0].enable —— 启动 EtherCAT 总线。"""
@@ -142,11 +158,9 @@ class PMAC:
         return await self.exec_cmd(f"#{motor}k")
 
     async def motor_move_abs(self, motor: int, pos: float) -> list[str]:
-        # 注意：用 **大写 J**。
-        # 这个固件里小写 #nj=value 是"以速度 value 朝正方向 jog"（持续运动到撞限位为止），
-        # 不是"jog 到位置 value"。大写 #nJ=value 才是"jog 到绝对位置 value"。
-        # 老代码 src/server/pmac_tcp_server.py:147 一直用大写 J，本驱动跟齐。
-        return await self.exec_cmd(f"#{motor}J={pos}")
+        # 控制协议v1.2 确认：小写 #nj=xx 就是「绝对移动到 xx」。
+        # （早期一度切大写 J 是基于错误推断，真正的坑是 offset，已在 v1.2 澄清。）
+        return await self.exec_cmd(f"#{motor}j={pos}")
 
     async def motor_move_rel(self, motor: int, delta: float) -> list[str]:
         return await self.exec_cmd(f"#{motor}j:{delta}")
