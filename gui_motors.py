@@ -14,6 +14,7 @@
 """
 
 import asyncio
+import datetime
 import os
 import sys
 import time
@@ -43,10 +44,10 @@ if _QML_DIR.is_dir():
     os.environ.setdefault("QML_IMPORT_PATH", str(_QML_DIR))
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QDoubleValidator, QFont, QColor, QShortcut, QKeySequence
+from PySide6.QtGui import QDoubleValidator, QFont, QColor
 from PySide6.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QLineEdit, QVBoxLayout,
-    QHBoxLayout, QGridLayout, QGroupBox, QListWidget, QListWidgetItem, QMessageBox,
+    QHBoxLayout, QGridLayout, QGroupBox, QCheckBox, QMessageBox,
     QSplitter, QDoubleSpinBox, QComboBox, QMainWindow, QTabWidget,
     QScrollArea, QSizePolicy, QTableWidget, QTableWidgetItem, QHeaderView,
     QAbstractItemView,
@@ -536,6 +537,10 @@ class MainWindow(QMainWindow):
         self._inflight: asyncio.Task | None = None
         self._grating_tab: DeviceTab | None = None
         self._overview: OverviewTab | None = None
+        # 日志：后台缓冲，勾选才落盘
+        self._log_buffer: list[str] = []
+        self._log_file = None
+        self._log_path: Path | None = None
 
         self._build_ui()
         self._set_connected(False)
@@ -572,39 +577,61 @@ class MainWindow(QMainWindow):
                 self._grating_tab = tab
         root.addWidget(self.tabs, stretch=1)
 
-        # 日志
-        logbox = QGroupBox("日志")
-        lb = QVBoxLayout(logbox)
-        # 日志用 QListWidget：一行一项，行命中测试按整行算，任何分辨率/缩放下
-        # 鼠标选中都不会差一行（不像富文本控件靠像素行高做命中测试）。
-        # 支持点拖多选 + Ctrl+C 复制选中行。
-        self.logw = QListWidget()
-        self.logw.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.logw.setUniformItemSizes(True)
-        self.logw.setMaximumHeight(140)
-        lf = QFont("DejaVu Sans Mono")
-        lf.setStyleHint(QFont.Monospace)
-        lf.setPointSize(10)
-        self.logw.setFont(lf)
-        _cp = QShortcut(QKeySequence.Copy, self.logw)
-        _cp.activated.connect(self._copy_log)
-        lb.addWidget(self.logw)
-        root.addWidget(logbox)
+        # 日志：不在前端显示，只后台缓冲。勾选才把本次会话日志写文件（不覆盖历史）。
+        logbar = QHBoxLayout()
+        self.chk_savelog = QCheckBox("保存日志到文件（勾选后保存本次会话，不覆盖历史）")
+        self.chk_savelog.toggled.connect(self._on_toggle_savelog)
+        self.log_status = QLabel("日志：仅后台，未保存")
+        self.log_status.setStyleSheet("color:#888;")
+        logbar.addWidget(self.chk_savelog)
+        logbar.addWidget(self.log_status, stretch=1)
+        root.addLayout(logbar)
 
         self.setCentralWidget(central)
 
     # ---------------- 公共接口（给 MotorControl/DeviceTab 调） ----------------
     def log(self, msg: str):
-        self.logw.addItem(QListWidgetItem(f"[{time.strftime('%H:%M:%S')}] {msg}"))
-        self.logw.scrollToBottom()
-        # 软上限：行数过多时砍掉最旧的
-        while self.logw.count() > 500:
-            self.logw.takeItem(0)
+        line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
+        print(line, flush=True)                    # 打到终端，方便实时看 / 复制
+        self._log_buffer.append(line)
+        if len(self._log_buffer) > 5000:           # 后台缓冲软上限
+            del self._log_buffer[:len(self._log_buffer) - 5000]
+        if self._log_file is not None:             # 已开启保存：立即落盘
+            try:
+                self._log_file.write(line + "\n")
+                self._log_file.flush()
+            except OSError:
+                pass
 
-    def _copy_log(self):
-        items = self.logw.selectedItems()
-        if items:
-            QApplication.clipboard().setText("\n".join(i.text() for i in items))
+    def _on_toggle_savelog(self, checked: bool):
+        if checked:
+            logdir = Path(__file__).resolve().parent / "logs"
+            try:
+                logdir.mkdir(exist_ok=True)
+                ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                self._log_path = logdir / f"pmac_{ts}.log"
+                self._log_file = open(self._log_path, "w", encoding="utf-8")
+                # 把本次会话此前的缓冲先全部写进去
+                if self._log_buffer:
+                    self._log_file.write("\n".join(self._log_buffer) + "\n")
+                    self._log_file.flush()
+            except OSError as e:
+                self.log_status.setText(f"日志保存失败: {e}")
+                self._log_file = None
+                self.chk_savelog.setChecked(False)
+                return
+            self.log_status.setText(f"正在保存 → {self._log_path}")
+            self.log("=== 开始保存日志 ===")
+        else:
+            if self._log_file is not None:
+                self.log("=== 停止保存日志 ===")
+                try:
+                    self._log_file.close()
+                except OSError:
+                    pass
+                self._log_file = None
+            done = f"（已保存到 {self._log_path}）" if self._log_path else ""
+            self.log_status.setText(f"日志：仅后台，未保存{done}")
 
     def save_cfg(self):
         try:
@@ -792,6 +819,12 @@ class MainWindow(QMainWindow):
             self._inflight.cancel()
         if self._poll_task and not self._poll_task.done():
             self._poll_task.cancel()
+        if self._log_file is not None:
+            try:
+                self._log_file.close()
+            except OSError:
+                pass
+            self._log_file = None
         super().closeEvent(ev)
 
 

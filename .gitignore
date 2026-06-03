@@ -9,6 +9,9 @@ motor_config.json
 # 自测截图产物（snap.py 渲染出来的临时 PNG）
 _*.png
 
+# 运行时保存的日志
+logs/
+
 # 虚拟环境
 venv/
 .venv/
