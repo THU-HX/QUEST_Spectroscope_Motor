@@ -1,9 +1,9 @@
 """离屏渲染整个多装置 GUI 并截图（不连 PMAC，注入假状态），供远端自测。
 
 用法:
-    python snap_gui.py <out.png> <tab_index> [motor5_actpos]
+    python snap_gui.py <out.png> <tab_index> [motor5_actpos] [motor6_actpos]
 
-tab_index: 0=调焦 1=光栅切换 2=机械快门 3=哈特曼门
+tab_index: 0=总览 1=调焦 2=光栅切换 3=机械快门 4=哈特曼门
 """
 import sys
 from pathlib import Path
@@ -24,6 +24,7 @@ def main():
     out = sys.argv[1] if len(sys.argv) > 1 else "/tmp/gui.png"
     tab = int(sys.argv[2]) if len(sys.argv) > 2 else 0
     m5 = float(sys.argv[3]) if len(sys.argv) > 3 else 0.0
+    m6 = float(sys.argv[4]) if len(sys.argv) > 4 else 0.0
 
     app = QApplication(sys.argv)
     w = G.MainWindow()
@@ -32,14 +33,14 @@ def main():
     w.show()
 
     # 注入假状态让截图有内容
-    demo = {1: 17.3, 2: 13.6, 3: 17.0, 4: 16.4, 5: m5, 6: 0.0, 7: 0.0, 8: 0.0}
+    demo = {1: 17.3, 2: 13.6, 3: 17.0, 4: 16.4, 5: m5, 6: m6, 7: 0.0, 8: 0.0}
     full = {mtr: fake_status(mtr, demo.get(mtr, 0.0)) for mtr in M.ALL_MOTORS}
     for mtr, mc in w.controls.items():
         mc.update_status(full[mtr])
     if w._overview:
         w._overview.update_status(full)
-    if w._grating_tab:
-        w._grating_tab.push_viewer_pos(m5)
+    for vmtr, vtab in w._viz_tabs.items():
+        vtab.push_viewer_pos(demo.get(vmtr, 0.0))
 
     def grab():
         img = w.grab()  # grab 整窗（含 QQuickWidget 合成内容）

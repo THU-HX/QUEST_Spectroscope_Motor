@@ -59,15 +59,70 @@ from viewer3d import Viewer3DWidget
 import motors as M
 
 POLL_S = 0.5
-VIEWER_QML = Path(__file__).resolve().parent / "viewer" / "Viewer.qml"
-VIEWER_GLB = Path(__file__).resolve().parent / "viewer" / "model.glb"
+# 3D 资产按电机查 motors.viewer_assets(motor)；电机 5 升降台 / 电机 6 快门各一套。
 
-_VAL_STYLE = ("font-family:Consolas,'Courier New',monospace;font-size:12pt;"
-              "padding:3px 6px;border:1px solid #bbb;background:#fafafa;min-width:120px;")
-_OK_BG = "background:#3fa84a;color:white;"
-_BAD_BG = "background:#c0392b;color:white;"
-_GREEN = QColor("#3fa84a")
-_RED = QColor("#c0392b")
+# 值显示用的"芯片"样式：浅底、圆角、等宽字
+_VAL_STYLE = ("font-family:Consolas,'Courier New',monospace;font-size:11pt;"
+              "padding:5px 10px;border:1px solid #e4e8ef;border-radius:6px;"
+              "background:#f5f7fa;color:#2b3038;min-width:120px;")
+_OK_BG = "background:#e9f7ef;color:#1f8a4c;border:1px solid #c5e8d3;"
+_BAD_BG = "background:#fdecea;color:#d23b2e;border:1px solid #f3c7c1;"
+_GREEN = QColor("#3aa76a")
+_RED = QColor("#e15b4f")
+
+# 小节标题（muted、字距）
+_SECTION = "color:#9aa3b2;font-weight:700;font-size:8pt;letter-spacing:1px;padding-top:2px;"
+
+# 全局主题
+THEME = """
+* { font-family:"Segoe UI","Microsoft YaHei UI","Noto Sans CJK SC","WenQuanYi Micro Hei",sans-serif; }
+QWidget { color:#2b3038; font-size:10pt; }
+QMainWindow, QWidget#Central { background:#eef1f6; }
+
+QTabWidget::pane { border:1px solid #e0e5ee; border-radius:10px; background:#f7f9fc; top:-1px; }
+QTabBar::tab { background:transparent; color:#7b8494; padding:9px 20px; margin-right:6px;
+    border:1px solid transparent; border-top-left-radius:9px; border-top-right-radius:9px; font-weight:600; }
+QTabBar::tab:selected { background:#ffffff; color:#2f6feb; border:1px solid #e0e5ee; border-bottom-color:#ffffff; }
+QTabBar::tab:!selected:hover { color:#2f6feb; }
+
+QGroupBox { background:#ffffff; border:1px solid #e6eaf1; border-radius:12px;
+    margin-top:16px; padding:14px; font-weight:600; }
+QGroupBox::title { subcontrol-origin:margin; subcontrol-position:top left; left:14px;
+    padding:2px 8px; color:#3b4250; background:transparent; }
+
+QPushButton { background:#ffffff; border:1px solid #d3dae5; border-radius:8px;
+    padding:7px 16px; color:#33404f; font-weight:500; }
+QPushButton:hover { border-color:#2f6feb; color:#2f6feb; background:#f7faff; }
+QPushButton:pressed { background:#eaf1fe; }
+QPushButton:disabled { color:#aeb6c2; border-color:#e6eaf1; background:#f3f5f9; }
+QPushButton[kind="primary"] { background:#2f6feb; border-color:#2f6feb; color:#ffffff; font-weight:600; }
+QPushButton[kind="primary"]:hover { background:#1f60dd; border-color:#1f60dd; color:#ffffff; }
+QPushButton[kind="primary"]:pressed { background:#1a55c5; }
+QPushButton[kind="primary"]:disabled { background:#b9cdf5; border-color:#b9cdf5; color:#ffffff; }
+QPushButton[kind="danger"] { background:#e2574c; border-color:#e2574c; color:#ffffff; font-weight:600; }
+QPushButton[kind="danger"]:hover { background:#d6463b; border-color:#d6463b; color:#ffffff; }
+QPushButton[kind="danger"]:pressed { background:#c23c32; }
+QPushButton[kind="danger"]:disabled { background:#f1b3ae; border-color:#f1b3ae; color:#ffffff; }
+
+QLineEdit, QDoubleSpinBox, QComboBox { background:#ffffff; border:1px solid #d3dae5;
+    border-radius:8px; padding:6px 9px; selection-background-color:#2f6feb; }
+QLineEdit:focus, QDoubleSpinBox:focus, QComboBox:focus { border:1px solid #2f6feb; }
+QComboBox::drop-down { border:none; width:22px; }
+QLineEdit:disabled, QDoubleSpinBox:disabled, QComboBox:disabled { background:#f3f5f9; color:#aeb6c2; }
+
+QTableWidget { background:#ffffff; border:1px solid #e6eaf1; border-radius:10px; gridline-color:#eef1f6; }
+QTableWidget::item { padding:6px; }
+QHeaderView::section { background:#f3f6fb; color:#5b6472; padding:9px; border:none;
+    border-bottom:1px solid #e6eaf1; font-weight:600; }
+QTableCornerButton::section { background:#f3f6fb; border:none; }
+
+QScrollArea { border:none; background:transparent; }
+QScrollBar:vertical { background:transparent; width:10px; margin:2px; }
+QScrollBar::handle:vertical { background:#cfd6e2; border-radius:5px; min-height:30px; }
+QScrollBar::handle:vertical:hover { background:#b7c0d0; }
+QScrollBar::add-line, QScrollBar::sub-line { height:0; }
+QCheckBox { color:#5b6472; spacing:8px; }
+"""
 
 
 def fnum(x, dec: int = 5) -> str:
@@ -118,14 +173,25 @@ class MotorControl(QGroupBox):
     @property
     def phys_max(self): return self.center + self.half
 
+    @staticmethod
+    def _section(text):
+        lab = QLabel(text)
+        lab.setStyleSheet(_SECTION)
+        return lab
+
     def _build_ui(self):
         root = QVBoxLayout(self)
+        root.setContentsMargins(14, 16, 14, 14)
+        root.setSpacing(9)
 
         # 状态行
+        root.addWidget(self._section("状态"))
         st = QGridLayout()
+        st.setHorizontalSpacing(10)
+        st.setVerticalSpacing(6)
         for i, name in enumerate(STATUS_FIELDS):
             tag = QLabel(name)
-            tag.setStyleSheet("font-weight:bold;")
+            tag.setStyleSheet("color:#7b8494;font-weight:600;")
             val = QLabel("--")
             val.setStyleSheet(_VAL_STYLE)
             val.setAlignment(Qt.AlignCenter)
@@ -137,10 +203,12 @@ class MotorControl(QGroupBox):
 
         # 使能 / 去使能 —— 所有电机都给（1-4 不用 EtherCAT 使能，但电机级
         # #nj/ 使能 / #nk 去使能仍然需要）。
+        root.addSpacing(2)
         eb = QHBoxLayout()
+        eb.setSpacing(8)
         self.btn_enable = QPushButton(f"使能 #{self.motor}j/")
-        self.btn_disable = QPushButton(f"去使能 #{self.motor}k (软急停)")
-        self.btn_disable.setStyleSheet("background:#c0392b;color:white;font-weight:bold;")
+        self.btn_disable = QPushButton(f"去使能 #{self.motor}k · 软急停")
+        self.btn_disable.setProperty("kind", "danger")
         self.btn_enable.clicked.connect(self._on_enable)
         self.btn_disable.clicked.connect(self._on_disable)
         eb.addWidget(self.btn_enable)
@@ -148,7 +216,10 @@ class MotorControl(QGroupBox):
         root.addLayout(eb)
 
         # 移动控制
+        root.addWidget(self._section("运动"))
         mg = QGridLayout()
+        mg.setHorizontalSpacing(8)
+        mg.setVerticalSpacing(8)
         self.abs_validator = QDoubleValidator(self)
         self.abs_validator.setNotation(QDoubleValidator.StandardNotation)
         self.abs_input = QLineEdit()
@@ -172,7 +243,9 @@ class MotorControl(QGroupBox):
         root.addLayout(mg)
 
         # offset/range 配置
+        root.addWidget(self._section("参数"))
         cf = QGridLayout()
+        cf.setHorizontalSpacing(8)
         cv = QDoubleValidator(self); cv.setNotation(QDoubleValidator.StandardNotation)
         self.center_input = QLineEdit(fnum(self.center))
         self.center_input.setValidator(cv)
@@ -318,20 +391,25 @@ class MotorControl(QGroupBox):
 class OverviewTab(QWidget):
     """总览页：一键使能/去使能所有电机 + 全 8 台状态表。"""
 
-    COLS = ["电机", "装置 · 名称", "ActPos", "ActVel", "AmpEna", "AmpFault", "SoftLimit"]
+    COLS = ["电机", "名称", "ActPos", "ActVel", "AmpEna", "AmpFault", "SoftLimit"]
 
     def __init__(self, ctrl: "MainWindow"):
         super().__init__()
         self.ctrl = ctrl
         root = QVBoxLayout(self)
+        root.setContentsMargins(14, 14, 14, 14)
+        root.setSpacing(12)
 
         # 一键使能 / 去使能
         bar = QHBoxLayout()
-        self.btn_enable_all = QPushButton("一键使能所有电机  (#1-8 j/)")
-        self.btn_enable_all.setStyleSheet("font-weight:bold;padding:10px;font-size:11pt;")
-        self.btn_disable_all = QPushButton("一键去使能所有电机  (#1-8 k · 软急停)")
-        self.btn_disable_all.setStyleSheet(
-            "background:#c0392b;color:white;font-weight:bold;padding:10px;font-size:11pt;")
+        bar.setSpacing(12)
+        self.btn_enable_all = QPushButton("一键使能所有电机  ·  #1-8 j/")
+        self.btn_enable_all.setProperty("kind", "primary")
+        self.btn_disable_all = QPushButton("一键去使能所有电机  ·  #1-8 k  软急停")
+        self.btn_disable_all.setProperty("kind", "danger")
+        for b in (self.btn_enable_all, self.btn_disable_all):
+            b.setMinimumHeight(48)
+            f = b.font(); f.setPointSize(11); f.setBold(True); b.setFont(f)
         self.btn_enable_all.clicked.connect(ctrl._on_enable_all)
         self.btn_disable_all.clicked.connect(ctrl._on_disable_all)
         bar.addWidget(self.btn_enable_all)
@@ -345,22 +423,22 @@ class OverviewTab(QWidget):
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionMode(QAbstractItemView.NoSelection)
         self.table.setFocusPolicy(Qt.NoFocus)
+        self.table.setShowGrid(False)
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(QHeaderView.Stretch)
-        tf = QFont("Consolas"); tf.setStyleHint(QFont.Monospace); tf.setPointSize(11)
+        tf = QFont("DejaVu Sans Mono"); tf.setStyleHint(QFont.Monospace); tf.setPointSize(11)
         self.table.setFont(tf)
 
-        dev_of = {m: d["name"] for d in M.DEVICES for m in d["motors"]}
         self._rows: dict[int, int] = {}
         for r, m in enumerate(M.ALL_MOTORS):
             self._rows[m] = r
             self._set(r, 0, str(m))
-            self._set(r, 1, f"{dev_of[m]} · {M.MOTOR_DEFS[m]['name']}")
+            self._set(r, 1, M.MOTOR_DEFS[m]["name"])
             for c in range(2, len(self.COLS)):
                 self._set(r, c, "--")
         self.table.resizeRowsToContents()
         for r in range(self.table.rowCount()):
-            self.table.setRowHeight(r, 34)
+            self.table.setRowHeight(r, 44)
         root.addWidget(self.table, stretch=1)
 
     def _set(self, r, c, text, bg=None):
@@ -408,16 +486,23 @@ class OverviewTab(QWidget):
 
 
 class DeviceTab(QWidget):
-    """一个装置一页。把它的电机块网格排列；光栅切换页额外在左侧挂 3D。"""
+    """一个装置一页。把它的电机块网格排列；带 3D 的电机页额外在左侧挂 3D 模型。"""
 
     def __init__(self, dev: dict, ctrl: "MainWindow"):
         super().__init__()
         self.dev = dev
         self.ctrl = ctrl
         self.viewer: Viewer3DWidget | None = None
+        # 本页是否带 3D：取第一个 has_3d 的电机（升降台=5 / 快门=6），其余装置为 None
+        self.viz_motor: int | None = next(
+            (m for m in dev["motors"] if M.MOTOR_DEFS[m].get("has_3d")), None)
+        self.assets = M.viewer_assets(self.viz_motor) if self.viz_motor else None
 
         controls_host = QWidget()
         grid = QGridLayout(controls_host)
+        grid.setContentsMargins(6, 6, 6, 6)
+        grid.setHorizontalSpacing(14)
+        grid.setVerticalSpacing(14)
         cols = 2 if len(dev["motors"]) >= 3 else 1
         for i, m in enumerate(dev["motors"]):
             mc = MotorControl(m, ctrl)
@@ -430,8 +515,7 @@ class DeviceTab(QWidget):
         scroll.setWidgetResizable(True)
         scroll.setWidget(controls_host)
 
-        has_3d = any(M.MOTOR_DEFS[m].get("has_3d") for m in dev["motors"])
-        if has_3d and VIEWER_QML.is_file() and VIEWER_GLB.is_file():
+        if self.assets is not None:
             left = self._build_viewer_pane()
             split = QSplitter(Qt.Horizontal)
             split.addWidget(left)
@@ -439,16 +523,24 @@ class DeviceTab(QWidget):
             split.setStretchFactor(0, 3)
             split.setStretchFactor(1, 2)
             split.setSizes([820, 520])
+            split.setHandleWidth(10)
             outer = QVBoxLayout(self)
+            outer.setContentsMargins(10, 10, 10, 10)
             outer.addWidget(split)
         else:
             outer = QVBoxLayout(self)
+            outer.setContentsMargins(10, 10, 10, 10)
             outer.addWidget(scroll)
+
+    def _viz(self) -> dict:
+        """本页 3D 电机对应的那套 viz 配置。"""
+        return self.ctrl.cfg["viz"][str(self.viz_motor)]
 
     def _build_viewer_pane(self) -> QWidget:
         pane = QWidget()
         lay = QVBoxLayout(pane)
-        self.viewer = Viewer3DWidget(VIEWER_QML, VIEWER_GLB)
+        qml_path, glb_path = self.assets
+        self.viewer = Viewer3DWidget(qml_path, glb_path)
         self.viewer.ready_changed.connect(self._on_viewer_ready)
         # QQuickWidget.setSource 同步：QML 可能在 __init__ 里就 Ready 了，
         # 这时 connect 接不到信号 → 手动补一次，把 center/scale/axis 推下去。
@@ -458,7 +550,7 @@ class DeviceTab(QWidget):
 
         viz = QGroupBox("3D 显示 (只影响动画，不影响电机命令)")
         vg = QGridLayout(viz)
-        v = self.ctrl.cfg["viz"]
+        v = self._viz()
         self.scale_spin = QDoubleSpinBox()
         self.scale_spin.setDecimals(6)
         self.scale_spin.setRange(0.000001, 100000.0)
@@ -485,32 +577,33 @@ class DeviceTab(QWidget):
     def _on_viewer_ready(self, ok: bool):
         if not ok:
             return
-        v = self.ctrl.cfg["viz"]
-        m5 = self.ctrl.cfg["motors"]["5"]
-        self.viewer.set_center(m5["center"])
+        v = self._viz()
+        center = self.ctrl.cfg["motors"][str(self.viz_motor)]["center"]
+        self.viewer.set_center(center)
         self.viewer.set_scale(v["mm_per_unit"])
         self.viewer.set_axis(v["axis"], int(v["direction"]))
 
     def _refresh_dir_label(self):
-        d = self.ctrl.cfg["viz"]["direction"]
+        d = self._viz()["direction"]
         self.dir_btn.setText(f"方向：{'+' if d > 0 else '-'}（点击翻转）")
 
     def _on_scale(self, mm: float):
-        self.ctrl.cfg["viz"]["mm_per_unit"] = mm
+        self._viz()["mm_per_unit"] = mm
         if self.viewer:
             self.viewer.set_scale(mm)
         self.ctrl.save_cfg()
 
     def _on_axis(self, axis: str):
-        self.ctrl.cfg["viz"]["axis"] = axis
+        v = self._viz()
+        v["axis"] = axis
         if self.viewer:
-            self.viewer.set_axis(axis, int(self.ctrl.cfg["viz"]["direction"]))
+            self.viewer.set_axis(axis, int(v["direction"]))
         self.ctrl.save_cfg()
 
     def _on_flip(self):
-        self.ctrl.cfg["viz"]["direction"] = -int(self.ctrl.cfg["viz"]["direction"])
+        v = self._viz()
+        v["direction"] = -int(v["direction"])
         self._refresh_dir_label()
-        v = self.ctrl.cfg["viz"]
         if self.viewer:
             self.viewer.set_axis(v["axis"], int(v["direction"]))
         self.ctrl.save_cfg()
@@ -535,7 +628,7 @@ class MainWindow(QMainWindow):
         self.controls: dict[int, MotorControl] = {}
         self._poll_task: asyncio.Task | None = None
         self._inflight: asyncio.Task | None = None
-        self._grating_tab: DeviceTab | None = None
+        self._viz_tabs: dict[int, DeviceTab] = {}   # 3D 电机号 -> 它所在的装置页
         self._overview: OverviewTab | None = None
         # 日志：后台缓冲，勾选才落盘
         self._log_buffer: list[str] = []
@@ -548,18 +641,28 @@ class MainWindow(QMainWindow):
     # ---------------- UI ----------------
     def _build_ui(self):
         central = QWidget()
+        central.setObjectName("Central")
         root = QVBoxLayout(central)
+        root.setContentsMargins(16, 16, 16, 12)
+        root.setSpacing(12)
 
         # 顶部：连接 + EtherCAT
         top = QHBoxLayout()
+        top.setSpacing(10)
+        self._dot = QLabel("●")
+        self._dot.setStyleSheet("color:#c7ccd6;font-size:13pt;")
         self.status_lbl = QLabel("未连接")
-        self.status_lbl.setStyleSheet("color:#888;font-weight:bold;padding:4px;")
-        self.btn_connect = QPushButton("Connect")
-        self.btn_disconnect = QPushButton("Disconnect")
-        self.btn_ecat = QPushButton("启动 EtherCAT (ECAT[0].enable)")
+        self.status_lbl.setStyleSheet("color:#7b8494;font-weight:600;")
+        self.btn_connect = QPushButton("连接")
+        self.btn_connect.setProperty("kind", "primary")
+        self.btn_disconnect = QPushButton("断开")
+        self.btn_ecat = QPushButton("启动 EtherCAT")
+        for b in (self.btn_connect, self.btn_disconnect, self.btn_ecat):
+            b.setMinimumHeight(36)
         self.btn_connect.clicked.connect(self._on_connect)
         self.btn_disconnect.clicked.connect(self._on_disconnect)
         self.btn_ecat.clicked.connect(self._on_ecat)
+        top.addWidget(self._dot)
         top.addWidget(self.status_lbl, stretch=1)
         top.addWidget(self.btn_connect)
         top.addWidget(self.btn_disconnect)
@@ -573,8 +676,8 @@ class MainWindow(QMainWindow):
         for dev in M.DEVICES:
             tab = DeviceTab(dev, self)
             self.tabs.addTab(tab, dev["name"])
-            if any(M.MOTOR_DEFS[m].get("has_3d") for m in dev["motors"]):
-                self._grating_tab = tab
+            if tab.viz_motor is not None:
+                self._viz_tabs[tab.viz_motor] = tab
         root.addWidget(self.tabs, stretch=1)
 
         # 日志：不在前端显示，只后台缓冲。勾选才把本次会话日志写文件（不覆盖历史）。
@@ -640,8 +743,9 @@ class MainWindow(QMainWindow):
             self.log(f"配置写盘失败: {e!r}")
 
     def on_motor_cfg_changed(self, motor: int):
-        if motor == 5 and self._grating_tab:
-            self._grating_tab.push_viewer_center(self.cfg["motors"]["5"]["center"])
+        tab = self._viz_tabs.get(motor)
+        if tab:
+            tab.push_viewer_center(self.cfg["motors"][str(motor)]["center"])
 
     @property
     def is_connected(self) -> bool:
@@ -739,11 +843,13 @@ class MainWindow(QMainWindow):
     # ---------------- 连接/状态 ----------------
     def _set_connected(self, ok: bool):
         if ok:
-            self.status_lbl.setText(f"已连接 {self.pmac._cfg['host']}")
-            self.status_lbl.setStyleSheet("color:#080;font-weight:bold;padding:4px;")
+            self.status_lbl.setText(f"已连接  {self.pmac._cfg['host']}")
+            self.status_lbl.setStyleSheet("color:#1f8a4c;font-weight:600;")
+            self._dot.setStyleSheet("color:#3aa76a;font-size:13pt;")
         else:
             self.status_lbl.setText("未连接")
-            self.status_lbl.setStyleSheet("color:#888;font-weight:bold;padding:4px;")
+            self.status_lbl.setStyleSheet("color:#7b8494;font-weight:600;")
+            self._dot.setStyleSheet("color:#c7ccd6;font-size:13pt;")
         self.btn_connect.setEnabled(not ok)
         self.btn_disconnect.setEnabled(ok)
         self.btn_ecat.setEnabled(ok)
@@ -808,8 +914,9 @@ class MainWindow(QMainWindow):
                         mc.update_status(st[m])
                 if self._overview:
                     self._overview.update_status(st)
-                if self._grating_tab and 5 in st and st[5].get("ActPos") is not None:
-                    self._grating_tab.push_viewer_pos(float(st[5]["ActPos"]))
+                for vmtr, vtab in self._viz_tabs.items():
+                    if vmtr in st and st[vmtr].get("ActPos") is not None:
+                        vtab.push_viewer_pos(float(st[vmtr]["ActPos"]))
                 await asyncio.sleep(POLL_S)
         except asyncio.CancelledError:
             pass
@@ -830,6 +937,7 @@ class MainWindow(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
+    app.setStyleSheet(THEME)
     loop = QEventLoop(app)
     asyncio.set_event_loop(loop)
     quit_ev = asyncio.Event()
