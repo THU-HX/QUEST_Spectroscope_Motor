@@ -32,15 +32,15 @@ def main():
     w.tabs.setCurrentIndex(tab)
     w.show()
 
-    # 注入假状态让截图有内容
-    demo = {1: 17.3, 2: 13.6, 3: 17.0, 4: 16.4, 5: m5, 6: m6, 7: 0.0, 8: 0.0}
+    # 注入假状态让截图有内容（调焦 1-4 给一个偏移量，截图能看出 3D 联动）
+    demo = {1: 23.0, 2: 20.0, 3: 11.0, 4: 23.0, 5: m5, 6: m6, 7: 0.0, 8: 0.0}
     full = {mtr: fake_status(mtr, demo.get(mtr, 0.0)) for mtr in M.ALL_MOTORS}
     for mtr, mc in w.controls.items():
         mc.update_status(full[mtr])
     if w._overview:
         w._overview.update_status(full)
-    for vmtr, vtab in w._viz_tabs.items():
-        vtab.push_viewer_pos(demo.get(vmtr, 0.0))
+    for vtab in w._viz_tabs:
+        vtab.push_positions(full)
 
     def grab():
         img = w.grab()  # grab 整窗（含 QQuickWidget 合成内容）

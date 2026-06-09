@@ -20,14 +20,14 @@ CONFIG_PATH = Path(__file__).resolve().parent / "motor_config.json"
 # range : 允许输入域半宽（绝对输入锁死在 ±range）；5-8 当作安全帽
 # needs_enable: 是否需要先 #nj/ 使能才能动（5-8 必须）
 # fast  : 快电机（5-8），影响默认显示比例与提示
-# has_3d: 是否在该电机页左侧挂 3D 模型（电机 5 升降台 / 电机 6 快门）
+# 注：哪些装置挂 3D 模型由下方 VIZ_DEVICES 按装置 key 决定（不再用每电机的标记）
 MOTOR_DEFS = {
     1: dict(name="调焦结构1 x轴", offset=17.0, range=6.0,       needs_enable=False, fast=False),
     2: dict(name="调焦结构1 y轴", offset=14.0, range=6.0,       needs_enable=False, fast=False),
     3: dict(name="调焦结构2 x轴", offset=17.0, range=6.0,       needs_enable=False, fast=False),
     4: dict(name="调焦结构2 y轴", offset=17.0, range=6.0,       needs_enable=False, fast=False),
-    5: dict(name="光栅切换",     offset=0.0,  range=2_000_000.0, needs_enable=True,  fast=True, has_3d=True),
-    6: dict(name="机械快门",     offset=0.0,  range=2_000_000.0, needs_enable=True,  fast=True, has_3d=True),
+    5: dict(name="光栅切换",     offset=0.0,  range=2_000_000.0, needs_enable=True,  fast=True),
+    6: dict(name="机械快门",     offset=0.0,  range=2_000_000.0, needs_enable=True,  fast=True),
     7: dict(name="哈特曼门左",   offset=0.0,  range=2_000_000.0, needs_enable=True,  fast=True),
     8: dict(name="哈特曼门右",   offset=0.0,  range=2_000_000.0, needs_enable=True,  fast=True),
 }
@@ -42,57 +42,79 @@ DEVICES = [
 
 ALL_MOTORS = [m for d in DEVICES for m in d["motors"]]
 
-# ---- 带 3D 预览的电机：viewer 资产位置 + 默认显示参数 ----
+# ---- 带 3D 预览的装置：viewer 资产 + 关联电机 + 类型 + 默认显示参数 ----
 VIEWER_ROOT = Path(__file__).resolve().parent / "viewer"
 
-# 每个带 3D 的电机对应 viewer/ 下的子目录（空串 = viewer/ 根目录）。
-# 每个目录里放 Viewer.qml + model.glb + baked/（balsam 预烤产物）。
-VIZ_ASSETS = {
-    5: "",          # 升降台（光栅切换）：viewer/Viewer.qml
-    6: "shutter",   # 机械快门：        viewer/shutter/Viewer.qml
-}
-VIZ_MOTORS = list(VIZ_ASSETS)   # 带 3D 的电机号
-
-# 每个 3D 电机的默认显示参数（快电机计数大，默认比例尺很小，纯视觉，可在界面里改）。
-# 注意 axis 是「模型坐标系」的轴，各 Viewer.qml 自行决定它映射到屏幕的哪个方向：
-#   电机 5 升降台：x 经 modelOrient(0,0,90) 映射到屏幕上下
-#   电机 6 快门：  x = 屏幕左右（挡光片沿导轨左右滑）
-DEFAULT_VIZ_BY_MOTOR = {
-    5: {"mm_per_unit": 0.0001, "axis": "x", "direction": 1},
-    6: {"mm_per_unit": 0.0001, "axis": "x", "direction": 1},
+# 按装置 key（见 DEVICES）组织 3D：
+#   subdir : viewer/ 下子目录（空串=根目录），放 Viewer.qml + model.glb + baked/
+#   motors : 该 3D 视图联动的电机
+#   kind   : "single"=单电机(升降/快门)；"focus"=两套调焦(电机1/2、3/4，前后+左右堆叠)
+VIZ_DEVICES = {
+    "grating": dict(subdir="",        motors=[5],          kind="single"),
+    "shutter": dict(subdir="shutter", motors=[6],          kind="single"),
+    "focus":   dict(subdir="focus",   motors=[1, 2, 3, 4], kind="focus"),
 }
 
+# 默认显示参数（按装置 key，纯视觉、可在界面里改）：
+#   single：{mm_per_unit, axis, direction}，axis 是模型轴，各 Viewer.qml 自定它到屏幕的映射
+#   focus ：{mm_per_unit, dir_fb, dir_lr}，前后/左右两个方向各可翻转；慢电机计数≈mm 默认放大 8 倍
+DEFAULT_VIZ_BY_DEVICE = {
+    "grating": {"mm_per_unit": 0.0001, "axis": "x", "direction": 1},
+    "shutter": {"mm_per_unit": 0.0001, "axis": "x", "direction": 1},
+    "focus":   {"mm_per_unit": 8.0,    "dir_fb": 1, "dir_lr": 1},
+}
 
-def viewer_assets(motor: int):
-    """返回该电机的 (Viewer.qml, model.glb) 路径；无 3D 或资产缺失返回 None。"""
-    if motor not in VIZ_ASSETS:
+
+def viewer_assets(device_key: str):
+    """返回该装置的 (Viewer.qml, model.glb) 路径；无 3D 或资产缺失返回 None。"""
+    spec = VIZ_DEVICES.get(device_key)
+    if not spec:
         return None
-    base = VIEWER_ROOT / VIZ_ASSETS[motor] if VIZ_ASSETS[motor] else VIEWER_ROOT
+    base = VIEWER_ROOT / spec["subdir"] if spec["subdir"] else VIEWER_ROOT
     qml, glb = base / "Viewer.qml", base / "model.glb"
     return (qml, glb) if qml.is_file() and glb.is_file() else None
 
 
+def viz_motors(device_key: str) -> list:
+    spec = VIZ_DEVICES.get(device_key)
+    return list(spec["motors"]) if spec else []
+
+
+def viz_kind(device_key: str):
+    spec = VIZ_DEVICES.get(device_key)
+    return spec["kind"] if spec else None
+
+
 def default_config() -> dict:
-    """完整默认配置：每电机 center/range + 每个 3D 电机一套 viz。"""
+    """完整默认配置：每电机 center/range + 每个 3D 装置一套 viz。"""
     return {
         "motors": {
             str(m): {"center": d["offset"], "range": d["range"]}
             for m, d in MOTOR_DEFS.items()
         },
-        "viz": {str(m): dict(v) for m, v in DEFAULT_VIZ_BY_MOTOR.items()},
+        "viz": {k: dict(v) for k, v in DEFAULT_VIZ_BY_DEVICE.items()},
     }
 
 
-def _merge_viz(dst: dict, src: dict) -> None:
-    """把磁盘上的一套 viz 合进默认 viz（逐字段校验类型）。"""
-    for fld in ("mm_per_unit", "direction"):
-        if fld in src:
-            try:
-                dst[fld] = float(src[fld]) if fld == "mm_per_unit" else int(src[fld])
-            except (ValueError, TypeError):
-                pass
-    if src.get("axis") in ("x", "y", "z"):
-        dst["axis"] = src["axis"]
+def _merge_viz(dst: dict, src) -> None:
+    """把磁盘上的一套 viz 合进默认 viz（按默认字段的类型逐项校验）。"""
+    if not isinstance(src, dict):
+        return
+    for fld, dval in dst.items():
+        if fld not in src:
+            continue
+        try:
+            if fld == "axis":
+                if src[fld] in ("x", "y", "z"):
+                    dst[fld] = src[fld]
+            elif isinstance(dval, bool):
+                dst[fld] = bool(src[fld])
+            elif isinstance(dval, int):
+                dst[fld] = int(src[fld])
+            else:
+                dst[fld] = float(src[fld])
+        except (ValueError, TypeError):
+            pass
 
 
 def load_config() -> dict:
@@ -114,17 +136,32 @@ def load_config() -> dict:
                         cfg["motors"][k][fld] = float(dm[k][fld])
                     except (ValueError, TypeError):
                         pass
-    # 合并 viz：兼容旧格式（单块 {mm_per_unit,axis,direction} 视为电机 5）
+    # 合并 viz：兼容三种历史格式
     dv = disk.get("viz", {})
     if isinstance(dv, dict):
         if "mm_per_unit" in dv or "axis" in dv or "direction" in dv:
-            _merge_viz(cfg["viz"]["5"], dv)        # 旧单块格式 → 电机 5
+            _merge_viz(cfg["viz"]["grating"], dv)          # 最旧：单块 → 升降台(grating)
         else:
-            for m in VIZ_MOTORS:                   # 新格式：按电机号
-                k = str(m)
-                if isinstance(dv.get(k), dict):
-                    _merge_viz(cfg["viz"][k], dv[k])
+            for mk, dk in {"5": "grating", "6": "shutter"}.items():
+                _merge_viz(cfg["viz"][dk], dv.get(mk))     # 旧：按电机号 5/6
+            for dk in DEFAULT_VIZ_BY_DEVICE:
+                _merge_viz(cfg["viz"][dk], dv.get(dk))     # 新：按装置 key
     return cfg
+
+
+def _viz_out(key: str, src: dict) -> dict:
+    out = {}
+    for fld, dval in DEFAULT_VIZ_BY_DEVICE[key].items():
+        v = src.get(fld, dval)
+        if fld == "axis":
+            out[fld] = str(v)
+        elif isinstance(dval, bool):
+            out[fld] = bool(v)
+        elif isinstance(dval, int):
+            out[fld] = int(v)
+        else:
+            out[fld] = float(v)
+    return out
 
 
 def save_config(cfg: dict) -> None:
@@ -136,14 +173,7 @@ def save_config(cfg: dict) -> None:
             }
             for m in MOTOR_DEFS
         },
-        "viz": {
-            str(m): {
-                "mm_per_unit": float(cfg["viz"][str(m)]["mm_per_unit"]),
-                "axis": str(cfg["viz"][str(m)]["axis"]),
-                "direction": int(cfg["viz"][str(m)]["direction"]),
-            }
-            for m in VIZ_MOTORS
-        },
+        "viz": {k: _viz_out(k, cfg["viz"][k]) for k in DEFAULT_VIZ_BY_DEVICE},
     }
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)

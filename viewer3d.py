@@ -89,6 +89,17 @@ class Viewer3DWidget(QQuickWidget):
         if int(direction) in (1, -1):
             self._set_prop("direction", int(direction))
 
+    # --- 多电机 viewer（focus）用：按电机号写 posM{n}/centerM{n} + 前后/左右方向 ---
+    def set_motor_pos(self, motor: int, phys: float):
+        self._set_prop(f"posM{int(motor)}", float(phys))
+
+    def set_motor_center(self, motor: int, center: float):
+        self._set_prop(f"centerM{int(motor)}", float(center))
+
+    def set_focus_dirs(self, dir_fb: int, dir_lr: int):
+        self._set_prop("dirFB", 1 if int(dir_fb) >= 0 else -1)
+        self._set_prop("dirLR", 1 if int(dir_lr) >= 0 else -1)
+
     # ------------------------------------------------- impl
 
     def _set_prop(self, name: str, value):

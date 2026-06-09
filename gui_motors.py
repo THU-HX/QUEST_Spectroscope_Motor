@@ -486,17 +486,23 @@ class OverviewTab(QWidget):
 
 
 class DeviceTab(QWidget):
-    """一个装置一页。把它的电机块网格排列；带 3D 的电机页额外在左侧挂 3D 模型。"""
+    """一个装置一页。把它的电机块网格排列；带 3D 的装置页额外在左侧挂 3D 模型。
+
+    3D 按装置 key 取资产/电机/类型（motors.VIZ_DEVICES）：
+      single（升降台5 / 快门6）：单电机，physPos + 运动轴 + 方向
+      focus （调焦1/2/3/4）    ：两套机构，posM{n} + 前后/左右两方向
+    """
 
     def __init__(self, dev: dict, ctrl: "MainWindow"):
         super().__init__()
         self.dev = dev
         self.ctrl = ctrl
         self.viewer: Viewer3DWidget | None = None
-        # 本页是否带 3D：取第一个 has_3d 的电机（升降台=5 / 快门=6），其余装置为 None
-        self.viz_motor: int | None = next(
-            (m for m in dev["motors"] if M.MOTOR_DEFS[m].get("has_3d")), None)
-        self.assets = M.viewer_assets(self.viz_motor) if self.viz_motor else None
+        # 本页 3D（无则全空）：资产 + 联动电机 + 类型，全部按装置 key 解析
+        self.dev_key = dev["key"]
+        self.assets = M.viewer_assets(self.dev_key)
+        self.viz_motors = M.viz_motors(self.dev_key)     # [] 表示无 3D
+        self.viz_kind = M.viz_kind(self.dev_key)         # "single" | "focus" | None
 
         controls_host = QWidget()
         grid = QGridLayout(controls_host)
@@ -507,6 +513,7 @@ class DeviceTab(QWidget):
         for i, m in enumerate(dev["motors"]):
             mc = MotorControl(m, ctrl)
             mc.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+            mc.setMinimumWidth(360)   # 保证 ActPos「值 (相对中心 …)」不被挤掉
             ctrl.controls[m] = mc
             grid.addWidget(mc, i // cols, i % cols)
         grid.setRowStretch(grid.rowCount(), 1)
@@ -520,9 +527,16 @@ class DeviceTab(QWidget):
             split = QSplitter(Qt.Horizontal)
             split.addWidget(left)
             split.addWidget(scroll)
-            split.setStretchFactor(0, 3)
-            split.setStretchFactor(1, 2)
-            split.setSizes([820, 520])
+            if self.viz_kind == "focus":
+                # 调焦 4 个电机卡片走 2 列，控制区需要更宽（否则 ActPos 被挤掉），
+                # 3D 区相应收窄；两套模型靠 QML 默认相机略缩放仍能填满。
+                split.setStretchFactor(0, 4)
+                split.setStretchFactor(1, 6)
+                split.setSizes([660, 840])
+            else:
+                split.setStretchFactor(0, 3)
+                split.setStretchFactor(1, 2)
+                split.setSizes([820, 520])
             split.setHandleWidth(10)
             outer = QVBoxLayout(self)
             outer.setContentsMargins(10, 10, 10, 10)
@@ -533,8 +547,8 @@ class DeviceTab(QWidget):
             outer.addWidget(scroll)
 
     def _viz(self) -> dict:
-        """本页 3D 电机对应的那套 viz 配置。"""
-        return self.ctrl.cfg["viz"][str(self.viz_motor)]
+        """本页装置对应的那套 viz 配置。"""
+        return self.ctrl.cfg["viz"][self.dev_key]
 
     def _build_viewer_pane(self) -> QWidget:
         pane = QWidget()
@@ -543,55 +557,70 @@ class DeviceTab(QWidget):
         self.viewer = Viewer3DWidget(qml_path, glb_path)
         self.viewer.ready_changed.connect(self._on_viewer_ready)
         # QQuickWidget.setSource 同步：QML 可能在 __init__ 里就 Ready 了，
-        # 这时 connect 接不到信号 → 手动补一次，把 center/scale/axis 推下去。
+        # 这时 connect 接不到信号 → 手动补一次，把 center/scale/方向推下去。
         if self.viewer.is_ready:
             self._on_viewer_ready(True)
         lay.addWidget(self.viewer, stretch=1)
+        lay.addWidget(self._build_viz_controls())
+        return pane
 
+    def _build_viz_controls(self) -> QWidget:
         viz = QGroupBox("3D 显示 (只影响动画，不影响电机命令)")
         vg = QGridLayout(viz)
         v = self._viz()
+        # 显示比例（两种 kind 都有）
         self.scale_spin = QDoubleSpinBox()
         self.scale_spin.setDecimals(6)
         self.scale_spin.setRange(0.000001, 100000.0)
-        self.scale_spin.setSingleStep(0.0001)
+        self.scale_spin.setSingleStep(0.0001 if self.viz_kind == "single" else 0.5)
         self.scale_spin.setValue(v["mm_per_unit"])
         self.scale_spin.setSuffix(" mm/count")
         self.scale_spin.valueChanged.connect(self._on_scale)
-        self.axis_combo = QComboBox()
-        self.axis_combo.addItems(["x", "y", "z"])
-        self.axis_combo.setCurrentText(v["axis"])
-        self.axis_combo.currentTextChanged.connect(self._on_axis)
-        self.dir_btn = QPushButton()
-        self._refresh_dir_label()
-        self.dir_btn.clicked.connect(self._on_flip)
         vg.addWidget(QLabel("显示比例:"), 0, 0, alignment=Qt.AlignRight)
         vg.addWidget(self.scale_spin, 0, 1)
-        vg.addWidget(QLabel("运动轴:"), 1, 0, alignment=Qt.AlignRight)
-        vg.addWidget(self.axis_combo, 1, 1)
-        vg.addWidget(self.dir_btn, 1, 2)
+
+        if self.viz_kind == "focus":
+            # 调焦：前后 / 左右 两个方向翻转
+            self.fb_btn = QPushButton(); self.fb_btn.clicked.connect(self._on_flip_fb)
+            self.lr_btn = QPushButton(); self.lr_btn.clicked.connect(self._on_flip_lr)
+            self._refresh_focus_labels()
+            vg.addWidget(QLabel("前后方向:"), 1, 0, alignment=Qt.AlignRight)
+            vg.addWidget(self.fb_btn, 1, 1)
+            vg.addWidget(QLabel("左右方向:"), 2, 0, alignment=Qt.AlignRight)
+            vg.addWidget(self.lr_btn, 2, 1)
+        else:
+            # 单电机：运动轴 + 单方向
+            self.axis_combo = QComboBox()
+            self.axis_combo.addItems(["x", "y", "z"])
+            self.axis_combo.setCurrentText(v["axis"])
+            self.axis_combo.currentTextChanged.connect(self._on_axis)
+            self.dir_btn = QPushButton()
+            self._refresh_dir_label()
+            self.dir_btn.clicked.connect(self._on_flip)
+            vg.addWidget(QLabel("运动轴:"), 1, 0, alignment=Qt.AlignRight)
+            vg.addWidget(self.axis_combo, 1, 1)
+            vg.addWidget(self.dir_btn, 1, 2)
         vg.setColumnStretch(1, 1)
-        lay.addWidget(viz)
-        return pane
+        return viz
 
     def _on_viewer_ready(self, ok: bool):
-        if not ok:
+        if not ok or not self.viewer:
             return
         v = self._viz()
-        center = self.ctrl.cfg["motors"][str(self.viz_motor)]["center"]
-        self.viewer.set_center(center)
         self.viewer.set_scale(v["mm_per_unit"])
-        self.viewer.set_axis(v["axis"], int(v["direction"]))
+        if self.viz_kind == "focus":
+            for m in self.viz_motors:
+                self.viewer.set_motor_center(m, self.ctrl.cfg["motors"][str(m)]["center"])
+            self.viewer.set_focus_dirs(v["dir_fb"], v["dir_lr"])
+        else:
+            m = self.viz_motors[0]
+            self.viewer.set_center(self.ctrl.cfg["motors"][str(m)]["center"])
+            self.viewer.set_axis(v["axis"], int(v["direction"]))
 
+    # ---- 单电机方向/轴 ----
     def _refresh_dir_label(self):
         d = self._viz()["direction"]
         self.dir_btn.setText(f"方向：{'+' if d > 0 else '-'}（点击翻转）")
-
-    def _on_scale(self, mm: float):
-        self._viz()["mm_per_unit"] = mm
-        if self.viewer:
-            self.viewer.set_scale(mm)
-        self.ctrl.save_cfg()
 
     def _on_axis(self, axis: str):
         v = self._viz()
@@ -608,12 +637,56 @@ class DeviceTab(QWidget):
             self.viewer.set_axis(v["axis"], int(v["direction"]))
         self.ctrl.save_cfg()
 
-    def push_viewer_pos(self, actpos: float):
-        if self.viewer:
-            self.viewer.set_motor_position(actpos)
+    # ---- 调焦前后/左右方向 ----
+    def _refresh_focus_labels(self):
+        v = self._viz()
+        self.fb_btn.setText(f"前后：{'+' if v['dir_fb'] > 0 else '-'}（点击翻转）")
+        self.lr_btn.setText(f"左右：{'+' if v['dir_lr'] > 0 else '-'}（点击翻转）")
 
-    def push_viewer_center(self, center: float):
+    def _on_flip_fb(self):
+        v = self._viz()
+        v["dir_fb"] = -int(v["dir_fb"])
+        self._refresh_focus_labels()
         if self.viewer:
+            self.viewer.set_focus_dirs(v["dir_fb"], v["dir_lr"])
+        self.ctrl.save_cfg()
+
+    def _on_flip_lr(self):
+        v = self._viz()
+        v["dir_lr"] = -int(v["dir_lr"])
+        self._refresh_focus_labels()
+        if self.viewer:
+            self.viewer.set_focus_dirs(v["dir_fb"], v["dir_lr"])
+        self.ctrl.save_cfg()
+
+    # ---- 共用：显示比例 + 轮询推送 ----
+    def _on_scale(self, mm: float):
+        self._viz()["mm_per_unit"] = mm
+        if self.viewer:
+            self.viewer.set_scale(mm)
+        self.ctrl.save_cfg()
+
+    def push_positions(self, st: dict):
+        """把本页相关电机的 ActPos 推给 3D（轮询每帧调）。"""
+        if not self.viewer:
+            return
+        if self.viz_kind == "focus":
+            for m in self.viz_motors:
+                if m in st and st[m].get("ActPos") is not None:
+                    self.viewer.set_motor_pos(m, float(st[m]["ActPos"]))
+        elif self.viz_motors:
+            m = self.viz_motors[0]
+            if m in st and st[m].get("ActPos") is not None:
+                self.viewer.set_motor_position(float(st[m]["ActPos"]))
+
+    def push_center(self, motor: int):
+        """某电机的 center 改了，重推给 3D。"""
+        if not self.viewer:
+            return
+        center = self.ctrl.cfg["motors"][str(motor)]["center"]
+        if self.viz_kind == "focus":
+            self.viewer.set_motor_center(motor, center)
+        else:
             self.viewer.set_center(center)
 
 
@@ -628,7 +701,7 @@ class MainWindow(QMainWindow):
         self.controls: dict[int, MotorControl] = {}
         self._poll_task: asyncio.Task | None = None
         self._inflight: asyncio.Task | None = None
-        self._viz_tabs: dict[int, DeviceTab] = {}   # 3D 电机号 -> 它所在的装置页
+        self._viz_tabs: list[DeviceTab] = []        # 带 3D 的装置页（升降/快门/调焦）
         self._overview: OverviewTab | None = None
         # 日志：后台缓冲，勾选才落盘
         self._log_buffer: list[str] = []
@@ -676,8 +749,8 @@ class MainWindow(QMainWindow):
         for dev in M.DEVICES:
             tab = DeviceTab(dev, self)
             self.tabs.addTab(tab, dev["name"])
-            if tab.viz_motor is not None:
-                self._viz_tabs[tab.viz_motor] = tab
+            if tab.assets is not None:
+                self._viz_tabs.append(tab)
         root.addWidget(self.tabs, stretch=1)
 
         # 日志：不在前端显示，只后台缓冲。勾选才把本次会话日志写文件（不覆盖历史）。
@@ -743,9 +816,9 @@ class MainWindow(QMainWindow):
             self.log(f"配置写盘失败: {e!r}")
 
     def on_motor_cfg_changed(self, motor: int):
-        tab = self._viz_tabs.get(motor)
-        if tab:
-            tab.push_viewer_center(self.cfg["motors"][str(motor)]["center"])
+        for tab in self._viz_tabs:
+            if motor in tab.viz_motors:
+                tab.push_center(motor)
 
     @property
     def is_connected(self) -> bool:
@@ -914,9 +987,8 @@ class MainWindow(QMainWindow):
                         mc.update_status(st[m])
                 if self._overview:
                     self._overview.update_status(st)
-                for vmtr, vtab in self._viz_tabs.items():
-                    if vmtr in st and st[vmtr].get("ActPos") is not None:
-                        vtab.push_viewer_pos(float(st[vmtr]["ActPos"]))
+                for vtab in self._viz_tabs:
+                    vtab.push_positions(st)
                 await asyncio.sleep(POLL_S)
         except asyncio.CancelledError:
             pass
