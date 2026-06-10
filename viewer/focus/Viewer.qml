@@ -47,9 +47,12 @@ Item {
     onMmPerUnitChanged: applyOffset(); onDirFBChanged: applyOffset(); onDirLRChanged: applyOffset()
     onFbAxisChanged: applyOffset(); onLrAxisChanged: applyOffset()
 
-    // 物理（用户确认）：Y 左右动→整套所有件一起动；X 前后动→只动相机+上层调焦台，
-    // 不动最底下的「二维电动平移台转接平板」。所以底板这块只随 Y、不随 X，其余件随 X+Y。
-    readonly property var lrOnlyPat: ["二维电动平移台转接平板"]
+    // 物理（用户确认）：调焦台分两层，上层=前后(X)、下层=左右(Y)。
+    //   Y 左右动 → 整套所有件一起动（下层带着上层和相机一起走）；
+    //   X 前后动 → 只动「上层调焦台 + 相机」，下层调焦台与底板不动。
+    // 联谊台原是一块刚性 mesh，已按 y≈-0.145 离线劈成「上层/下层」两块（balsam 重烤）。
+    // 下面这些件只随 Y、不随 X：下层调焦台 + 底板；其余件（上层 + 相机 + 上层小板）随 X+Y。
+    readonly property var lrOnlyPat: ["联谊五维调整台下层", "二维电动平移台转接平板"]
     readonly property var hidePatterns: [
         "gb_fastener", "gb_socket", "washer", "screw", "nut", "线光源", "current camera"
     ]
@@ -160,7 +163,7 @@ Item {
             newInsts.push({ nodes: nodes, mf: mf[ii], ml: ml[ii] });
         }
         insts = newInsts;
-        hud.text = "调焦装置 3D · 两套机构 · 左右=整体动 / 前后=相机+调焦台动(底板不动)";
+        hud.text = "调焦装置 3D · 两套机构 · 左右=整体动 / 前后=相机+上层调焦台动(下层+底板不动)";
         applyOffset();
     }
 
