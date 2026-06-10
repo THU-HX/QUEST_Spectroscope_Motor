@@ -564,22 +564,43 @@ class DeviceTab(QWidget):
         lay.addWidget(self._build_viz_controls())
         return pane
 
+    def _scale_field(self) -> str:
+        """显示比例在 viz 配置里的字段名：哈特曼门是旋转(度/计数)，其余是 mm/计数。"""
+        return "deg_per_unit" if self.viz_kind == "hartmann" else "mm_per_unit"
+
+    def _push_scale(self, val: float):
+        if not self.viewer:
+            return
+        if self.viz_kind == "hartmann":
+            self.viewer.set_deg_scale(val)
+        else:
+            self.viewer.set_scale(val)
+
     def _build_viz_controls(self) -> QWidget:
         viz = QGroupBox("3D 显示 (只影响动画，不影响电机命令)")
         vg = QGridLayout(viz)
         v = self._viz()
-        # 显示比例（两种 kind 都有）
+        # 显示比例（所有 kind 都有；哈特曼门单位是 °/count）
         self.scale_spin = QDoubleSpinBox()
         self.scale_spin.setDecimals(6)
         self.scale_spin.setRange(0.000001, 100000.0)
-        self.scale_spin.setSingleStep(0.0001 if self.viz_kind == "single" else 0.5)
-        self.scale_spin.setValue(v["mm_per_unit"])
-        self.scale_spin.setSuffix(" mm/count")
+        self.scale_spin.setSingleStep(0.5 if self.viz_kind == "focus" else 0.0001)
+        self.scale_spin.setValue(v[self._scale_field()])
+        self.scale_spin.setSuffix(" °/count" if self.viz_kind == "hartmann" else " mm/count")
         self.scale_spin.valueChanged.connect(self._on_scale)
         vg.addWidget(QLabel("显示比例:"), 0, 0, alignment=Qt.AlignRight)
         vg.addWidget(self.scale_spin, 0, 1)
 
-        if self.viz_kind == "focus":
+        if self.viz_kind == "hartmann":
+            # 哈特曼门：左/右门旋转方向各自翻转
+            self.hl_btn = QPushButton(); self.hl_btn.clicked.connect(self._on_flip_hl)
+            self.hr_btn = QPushButton(); self.hr_btn.clicked.connect(self._on_flip_hr)
+            self._refresh_hart_labels()
+            vg.addWidget(QLabel("左门方向:"), 1, 0, alignment=Qt.AlignRight)
+            vg.addWidget(self.hl_btn, 1, 1)
+            vg.addWidget(QLabel("右门方向:"), 2, 0, alignment=Qt.AlignRight)
+            vg.addWidget(self.hr_btn, 2, 1)
+        elif self.viz_kind == "focus":
             # 调焦：前后 / 左右 两个方向翻转
             self.fb_btn = QPushButton(); self.fb_btn.clicked.connect(self._on_flip_fb)
             self.lr_btn = QPushButton(); self.lr_btn.clicked.connect(self._on_flip_lr)
@@ -607,11 +628,15 @@ class DeviceTab(QWidget):
         if not ok or not self.viewer:
             return
         v = self._viz()
-        self.viewer.set_scale(v["mm_per_unit"])
+        self._push_scale(v[self._scale_field()])
         if self.viz_kind == "focus":
             for m in self.viz_motors:
                 self.viewer.set_motor_center(m, self.ctrl.cfg["motors"][str(m)]["center"])
             self.viewer.set_focus_dirs(v["dir_fb"], v["dir_lr"])
+        elif self.viz_kind == "hartmann":
+            for m in self.viz_motors:
+                self.viewer.set_motor_center(m, self.ctrl.cfg["motors"][str(m)]["center"])
+            self.viewer.set_hartmann_dirs(v["dir_left"], v["dir_right"])
         else:
             m = self.viz_motors[0]
             self.viewer.set_center(self.ctrl.cfg["motors"][str(m)]["center"])
@@ -659,18 +684,39 @@ class DeviceTab(QWidget):
             self.viewer.set_focus_dirs(v["dir_fb"], v["dir_lr"])
         self.ctrl.save_cfg()
 
-    # ---- 共用：显示比例 + 轮询推送 ----
-    def _on_scale(self, mm: float):
-        self._viz()["mm_per_unit"] = mm
+    # ---- 哈特曼门左/右门方向 ----
+    def _refresh_hart_labels(self):
+        v = self._viz()
+        self.hl_btn.setText(f"左门：{'+' if v['dir_left'] > 0 else '-'}（点击翻转）")
+        self.hr_btn.setText(f"右门：{'+' if v['dir_right'] > 0 else '-'}（点击翻转）")
+
+    def _on_flip_hl(self):
+        v = self._viz()
+        v["dir_left"] = -int(v["dir_left"])
+        self._refresh_hart_labels()
         if self.viewer:
-            self.viewer.set_scale(mm)
+            self.viewer.set_hartmann_dirs(v["dir_left"], v["dir_right"])
+        self.ctrl.save_cfg()
+
+    def _on_flip_hr(self):
+        v = self._viz()
+        v["dir_right"] = -int(v["dir_right"])
+        self._refresh_hart_labels()
+        if self.viewer:
+            self.viewer.set_hartmann_dirs(v["dir_left"], v["dir_right"])
+        self.ctrl.save_cfg()
+
+    # ---- 共用：显示比例 + 轮询推送 ----
+    def _on_scale(self, val: float):
+        self._viz()[self._scale_field()] = val
+        self._push_scale(val)
         self.ctrl.save_cfg()
 
     def push_positions(self, st: dict):
         """把本页相关电机的 ActPos 推给 3D（轮询每帧调）。"""
         if not self.viewer:
             return
-        if self.viz_kind == "focus":
+        if self.viz_kind in ("focus", "hartmann"):    # 多电机：按电机号推 posM{n}
             for m in self.viz_motors:
                 if m in st and st[m].get("ActPos") is not None:
                     self.viewer.set_motor_pos(m, float(st[m]["ActPos"]))
@@ -684,7 +730,7 @@ class DeviceTab(QWidget):
         if not self.viewer:
             return
         center = self.ctrl.cfg["motors"][str(motor)]["center"]
-        if self.viz_kind == "focus":
+        if self.viz_kind in ("focus", "hartmann"):
             self.viewer.set_motor_center(motor, center)
         else:
             self.viewer.set_center(center)

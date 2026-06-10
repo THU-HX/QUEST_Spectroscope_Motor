@@ -50,18 +50,21 @@ VIEWER_ROOT = Path(__file__).resolve().parent / "viewer"
 #   motors : 该 3D 视图联动的电机
 #   kind   : "single"=单电机(升降/快门)；"focus"=两套调焦(电机1/2、3/4，前后+左右堆叠)
 VIZ_DEVICES = {
-    "grating": dict(subdir="",        motors=[5],          kind="single"),
-    "shutter": dict(subdir="shutter", motors=[6],          kind="single"),
-    "focus":   dict(subdir="focus",   motors=[1, 2, 3, 4], kind="focus"),
+    "grating":  dict(subdir="",         motors=[5],          kind="single"),
+    "shutter":  dict(subdir="shutter",  motors=[6],          kind="single"),
+    "focus":    dict(subdir="focus",    motors=[1, 2, 3, 4], kind="focus"),
+    "hartmann": dict(subdir="hartmann", motors=[7, 8],       kind="hartmann"),
 }
 
 # 默认显示参数（按装置 key，纯视觉、可在界面里改）：
 #   single：{mm_per_unit, axis, direction}，axis 是模型轴，各 Viewer.qml 自定它到屏幕的映射
 #   focus ：{mm_per_unit, dir_fb, dir_lr}，前后/左右两个方向各可翻转；慢电机计数≈mm 默认放大 8 倍
 DEFAULT_VIZ_BY_DEVICE = {
-    "grating": {"mm_per_unit": 0.0001, "axis": "x", "direction": 1},
-    "shutter": {"mm_per_unit": 0.0001, "axis": "x", "direction": 1},
-    "focus":   {"mm_per_unit": 8.0,    "dir_fb": 1, "dir_lr": 1},
+    "grating":  {"mm_per_unit": 0.0001, "axis": "x", "direction": 1},
+    "shutter":  {"mm_per_unit": 0.0001, "axis": "x", "direction": 1},
+    "focus":    {"mm_per_unit": 8.0,    "dir_fb": 1, "dir_lr": 1},
+    # 哈特曼门是旋转运动：deg_per_unit = 1 count 转多少度；左右门方向各自可翻
+    "hartmann": {"deg_per_unit": 0.0001, "dir_left": 1, "dir_right": 1},
 }
 
 

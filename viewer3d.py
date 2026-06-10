@@ -100,6 +100,14 @@ class Viewer3DWidget(QQuickWidget):
         self._set_prop("dirFB", 1 if int(dir_fb) >= 0 else -1)
         self._set_prop("dirLR", 1 if int(dir_lr) >= 0 else -1)
 
+    # --- 哈特曼门（旋转）用：度/计数 比例 + 左右门方向 ---
+    def set_deg_scale(self, deg_per_unit: float):
+        self._set_prop("degPerUnit", float(deg_per_unit))
+
+    def set_hartmann_dirs(self, dir_left: int, dir_right: int):
+        self._set_prop("dirL", 1 if int(dir_left) >= 0 else -1)
+        self._set_prop("dirR", 1 if int(dir_right) >= 0 else -1)
+
     # ------------------------------------------------- impl
 
     def _set_prop(self, name: str, value):

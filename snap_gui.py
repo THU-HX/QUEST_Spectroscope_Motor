@@ -1,7 +1,7 @@
 """离屏渲染整个多装置 GUI 并截图（不连 PMAC，注入假状态），供远端自测。
 
 用法:
-    python snap_gui.py <out.png> <tab_index> [motor5_actpos] [motor6_actpos]
+    python snap_gui.py <out.png> <tab_index> [m5] [m6] [m7] [m8]
 
 tab_index: 0=总览 1=调焦 2=光栅切换 3=机械快门 4=哈特曼门
 """
@@ -25,6 +25,8 @@ def main():
     tab = int(sys.argv[2]) if len(sys.argv) > 2 else 0
     m5 = float(sys.argv[3]) if len(sys.argv) > 3 else 0.0
     m6 = float(sys.argv[4]) if len(sys.argv) > 4 else 0.0
+    m7 = float(sys.argv[5]) if len(sys.argv) > 5 else 0.0
+    m8 = float(sys.argv[6]) if len(sys.argv) > 6 else 0.0
 
     app = QApplication(sys.argv)
     w = G.MainWindow()
@@ -33,7 +35,7 @@ def main():
     w.show()
 
     # 注入假状态让截图有内容（调焦 1-4 给一个偏移量，截图能看出 3D 联动）
-    demo = {1: 23.0, 2: 20.0, 3: 11.0, 4: 23.0, 5: m5, 6: m6, 7: 0.0, 8: 0.0}
+    demo = {1: 23.0, 2: 20.0, 3: 11.0, 4: 23.0, 5: m5, 6: m6, 7: m7, 8: m8}
     full = {mtr: fake_status(mtr, demo.get(mtr, 0.0)) for mtr in M.ALL_MOTORS}
     for mtr, mc in w.controls.items():
         mc.update_status(full[mtr])
