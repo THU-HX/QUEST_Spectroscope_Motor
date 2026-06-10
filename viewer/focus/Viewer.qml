@@ -47,8 +47,9 @@ Item {
     onMmPerUnitChanged: applyOffset(); onDirFBChanged: applyOffset(); onDirLRChanged: applyOffset()
     onFbAxisChanged: applyOffset(); onLrAxisChanged: applyOffset()
 
-    readonly property var greenPat: ["联谊"]
-    readonly property var camPat:   ["ccd", "相机转接"]
+    // 物理（用户确认）：Y 左右动→整套所有件一起动；X 前后动→只动相机+上层调焦台，
+    // 不动最底下的「二维电动平移台转接平板」。所以底板这块只随 Y、不随 X，其余件随 X+Y。
+    readonly property var lrOnlyPat: ["二维电动平移台转接平板"]
     readonly property var hidePatterns: [
         "gb_fastener", "gb_socket", "washer", "screw", "nut", "线光源", "current camera"
     ]
@@ -135,7 +136,7 @@ Item {
         for (var ii = 0; ii < 2; ++ii) {
             var rootNode = bakedRoots[ii];
             if (!rootNode) continue;
-            var green = [], cam = [], seenMats = [];
+            var nodes = [], seenMats = [];
             var stack = [rootNode], safety = 0;
             while (stack.length > 0 && safety < 20000) {
                 safety++;
@@ -145,9 +146,9 @@ Item {
                     var mat = n.materials[mi]; if (mat && seenMats.indexOf(mat) === -1) seenMats.push(mat);
                 }
                 if (matchAny(nm, hidePatterns)) { n.visible = false; }
-                else {
-                    if (matchAny(nm, greenPat))      green.push({ node: n, base: Qt.vector3d(n.x, n.y, n.z) });
-                    else if (matchAny(nm, camPat))   cam.push({ node: n, base: Qt.vector3d(n.x, n.y, n.z) });
+                else if (n.geometry || (n.materials && n.materials.length > 0)) {
+                    // 收集所有可见件；fb=true 表示它也随前后(X)动；底板只随左右(Y)
+                    nodes.push({ node: n, base: Qt.vector3d(n.x, n.y, n.z), fb: !matchAny(nm, lrOnlyPat) });
                 }
                 var kids = gather(n);
                 for (var j = 0; j < kids.length; ++j) stack.push(kids[j]);
@@ -156,10 +157,10 @@ Item {
                 var sm = seenMats[si];
                 try { if ("metalness" in sm) sm.metalness = 0.0; if ("roughness" in sm) sm.roughness = 0.55; if ("baseColor" in sm) sm.baseColor = clay; } catch (e) {}
             }
-            newInsts.push({ green: green, cam: cam, mf: mf[ii], ml: ml[ii] });
+            newInsts.push({ nodes: nodes, mf: mf[ii], ml: ml[ii] });
         }
         insts = newInsts;
-        hud.text = "调焦装置 3D · 两套机构 · 绿色台=左右 / 相机=前后+随动";
+        hud.text = "调焦装置 3D · 两套机构 · 左右=整体动 / 前后=相机+调焦台动(底板不动)";
         applyOffset();
     }
 
@@ -174,16 +175,14 @@ Item {
             var it = insts[i];
             var dFB = deltaMeters(it.mf) * dirFB;     // 前后（x 电机 1/3）
             var dLR = deltaMeters(it.ml) * dirLR;     // 左右（y 电机 2/4）
-            // 联谊整台是一块刚性 mesh，无法只动其上半的「黄色前后台」。所以让整台(green)
-            // 连同相机(cam)一起做「左右随动 + 前后」——相机始终坐在台上、不会凭空悬空；
-            // 底板(二维转接平板)未被收集，保持不动，作为固定参考。
-            var move = it.green.concat(it.cam);
-            for (var k = 0; k < move.length; ++k) {
-                var b = move[k].base;
-                move[k].node.position = Qt.vector3d(
-                    b.x + lr.x*dLR + fb.x*dFB,
-                    b.y + lr.y*dLR + fb.y*dFB,
-                    b.z + lr.z*dLR + fb.z*dFB);
+            // 每件都随左右(dLR)动；除底板外的件再叠加前后(dFB)。
+            for (var k = 0; k < it.nodes.length; ++k) {
+                var nd = it.nodes[k], b = nd.base;
+                var f = nd.fb ? dFB : 0.0;
+                nd.node.position = Qt.vector3d(
+                    b.x + lr.x*dLR + fb.x*f,
+                    b.y + lr.y*dLR + fb.y*f,
+                    b.z + lr.z*dLR + fb.z*f);
             }
         }
     }
