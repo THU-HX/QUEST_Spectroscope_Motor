@@ -19,6 +19,10 @@ Item {
     // ---- Python 端写入 ----
     property real posM7: 0;  property real posM8: 0
     property real centerM7: 0; property real centerM8: 0
+
+    // 轮询 2Hz 一格一格跳很卡 → 角度补间：450ms 线性滑到新值，旋转连续不顿挫
+    Behavior on posM7 { NumberAnimation { duration: 450; easing.type: Easing.Linear } }
+    Behavior on posM8 { NumberAnimation { duration: 450; easing.type: Easing.Linear } }
     property real degPerUnit: 0.0001   // 1 count → 多少度（快电机计数大，默认很小）
     property int  dirL: 1              // 左门方向 ±
     property int  dirR: 1              // 右门方向 ±

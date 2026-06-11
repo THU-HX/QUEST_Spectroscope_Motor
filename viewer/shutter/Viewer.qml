@@ -24,6 +24,9 @@ Item {
     property string axisName:    "x"   // 'x' | 'y' | 'z'：导轨/挡光滑动方向（实测 x = 左右）
     property int    direction:   1     // +1 | -1（+1 时挡光片向右滑、露出左侧光孔）
 
+    // 轮询 2Hz 一格一格跳很卡 → 位置补间：450ms 线性滑到新值，接上下一次刷新
+    Behavior on physPos { NumberAnimation { duration: 450; easing.type: Easing.Linear } }
+
     // 派生：位移（米）
     readonly property real deltaM:
         ((physPos - centerPhys) * mmPerUnit / 1000.0) * direction

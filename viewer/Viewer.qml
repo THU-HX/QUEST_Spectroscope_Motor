@@ -22,6 +22,10 @@ Item {
     property string axisName:    "x"   // 'x' | 'y' | 'z'
     property int    direction:   1     // +1 | -1
 
+    // 轮询 2Hz，一格一格跳很卡。位置属性挂补间：每次新数据到来，450ms 内线性滑到
+    // 新值（60fps 插值），正好接上下一次刷新 → 连续运动的观感。
+    Behavior on physPos { NumberAnimation { duration: 450; easing.type: Easing.Linear } }
+
     // 派生：位移（米），三选轴用
     readonly property real deltaM:
         ((physPos - centerPhys) * mmPerUnit / 1000.0) * direction

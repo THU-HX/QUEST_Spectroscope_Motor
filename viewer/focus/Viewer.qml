@@ -18,6 +18,12 @@ Item {
     // ---- Python 端写入：每个电机的 ActPos 与归零中心 ----
     property real posM1: 0; property real posM2: 0; property real posM3: 0; property real posM4: 0
     property real centerM1: 0; property real centerM2: 0; property real centerM3: 0; property real centerM4: 0
+
+    // 轮询 2Hz 一格一格跳很卡 → 位置补间：450ms 线性滑到新值，接上下一次刷新
+    Behavior on posM1 { NumberAnimation { duration: 450; easing.type: Easing.Linear } }
+    Behavior on posM2 { NumberAnimation { duration: 450; easing.type: Easing.Linear } }
+    Behavior on posM3 { NumberAnimation { duration: 450; easing.type: Easing.Linear } }
+    Behavior on posM4 { NumberAnimation { duration: 450; easing.type: Easing.Linear } }
     property real mmPerUnit: 8.0          // 1 count → 多少 mm（慢电机计数≈mm，±6 行程默认放大 8 倍便于看清）
     property int  dirFB: 1                 // 前后方向 ±
     property int  dirLR: 1                 // 左右方向 ±
