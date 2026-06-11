@@ -35,7 +35,11 @@ Item {
     property real camYaw:   -52
     property real camPitch: -16
     property real camDist:  1.18
-    property vector3d camCenter: Qt.vector3d(0.17, -0.18, -0.03)
+    // 瞄点抬高到模型竖直中段（y=-0.09），模型在画面里整体下移、不再顶到上沿
+    property vector3d camCenter: Qt.vector3d(0.17, -0.09, -0.03)
+
+    // 用户拖动/缩放后发出 → Python 把当前视角写进 motor_config.json，下次启动恢复
+    signal camChanged()
 
     // 每套：{green:[{node,base}], cam:[{node,base}], mf, ml}
     property var insts: []
@@ -96,7 +100,8 @@ Item {
             root.camPitch = Math.max(-89, Math.min(89, root.camPitch - (m.y - lastY) * 0.35));
             lastX = m.x; lastY = m.y;
         }
-        onWheel: (w) => { root.camDist = Math.max(0.2, Math.min(6.0, root.camDist * ((w.angleDelta.y > 0) ? 0.88 : 1.136))); }
+        onReleased: root.camChanged()
+        onWheel: (w) => { root.camDist = Math.max(0.2, Math.min(6.0, root.camDist * ((w.angleDelta.y > 0) ? 0.88 : 1.136))); root.camChanged(); }
     }
 
     Rectangle { anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; height: 50; color: "#000"; opacity: 0.55 }

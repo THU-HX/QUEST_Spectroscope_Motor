@@ -29,6 +29,9 @@ Item {
     property real camDist:  0.75
     property vector3d camCenter: Qt.vector3d(0, 0.19, -0.02)
 
+    // 用户拖动/缩放后发出 → Python 把当前视角写进 motor_config.json，下次启动恢复
+    signal camChanged()
+
     // 每扇门：[{node, baseP:vector3d, baseQ:quaternion}]
     property var leftNodes: []
     property var rightNodes: []
@@ -82,7 +85,8 @@ Item {
             root.camPitch = Math.max(-89, Math.min(89, root.camPitch - (m.y - lastY) * 0.35));
             lastX = m.x; lastY = m.y;
         }
-        onWheel: (w) => { root.camDist = Math.max(0.15, Math.min(5.0, root.camDist * ((w.angleDelta.y > 0) ? 0.88 : 1.136))); }
+        onReleased: root.camChanged()
+        onWheel: (w) => { root.camDist = Math.max(0.15, Math.min(5.0, root.camDist * ((w.angleDelta.y > 0) ? 0.88 : 1.136))); root.camChanged(); }
     }
 
     Rectangle { anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; height: 70; color: "#000"; opacity: 0.55 }

@@ -59,12 +59,18 @@ VIZ_DEVICES = {
 # 默认显示参数（按装置 key，纯视觉、可在界面里改）：
 #   single：{mm_per_unit, axis, direction}，axis 是模型轴，各 Viewer.qml 自定它到屏幕的映射
 #   focus ：{mm_per_unit, dir_fb, dir_lr}，前后/左右两个方向各可翻转；慢电机计数≈mm 默认放大 8 倍
+# cam_yaw/cam_pitch/cam_dist：3D 视角（方位角/俯仰角/距离）。用户鼠标拖动/缩放后
+# 自动存盘，下次启动恢复——这里只是首次默认值，不会锁死视角。
 DEFAULT_VIZ_BY_DEVICE = {
-    "grating":  {"mm_per_unit": 0.0001, "axis": "x", "direction": 1},
-    "shutter":  {"mm_per_unit": 0.0001, "axis": "x", "direction": 1},
-    "focus":    {"mm_per_unit": 8.0,    "dir_fb": 1, "dir_lr": 1},
+    "grating":  {"mm_per_unit": 0.0001, "axis": "x", "direction": 1,
+                 "cam_yaw": -35.0, "cam_pitch": -8.0, "cam_dist": 1.10},
+    "shutter":  {"mm_per_unit": 0.0001, "axis": "x", "direction": 1,
+                 "cam_yaw": -20.0, "cam_pitch": -14.0, "cam_dist": 1.30},
+    "focus":    {"mm_per_unit": 8.0,    "dir_fb": 1, "dir_lr": 1,
+                 "cam_yaw": -52.0, "cam_pitch": -16.0, "cam_dist": 1.18},
     # 哈特曼门是旋转运动：deg_per_unit = 1 count 转多少度；左右门方向各自可翻
-    "hartmann": {"deg_per_unit": 0.0001, "dir_left": 1, "dir_right": 1},
+    "hartmann": {"deg_per_unit": 0.0001, "dir_left": 1, "dir_right": 1,
+                 "cam_yaw": -60.0, "cam_pitch": -15.0, "cam_dist": 0.75},
 }
 
 

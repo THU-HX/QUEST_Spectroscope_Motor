@@ -38,6 +38,9 @@ Item {
     property real camDist:  1.30   // 相机到 pivot 的距离（米）
     property vector3d camCenter: Qt.vector3d(0, 0, 0)
 
+    // 用户拖动/缩放后发出 → Python 把当前视角写进 motor_config.json，下次启动恢复
+    signal camChanged()
+
     onPhysPosChanged:    applyOffset()
     onCenterPhysChanged: applyOffset()
     onMmPerUnitChanged:  applyOffset()
@@ -115,9 +118,11 @@ Item {
             root.camYaw   -= dx * 0.35;
             root.camPitch  = Math.max(-89, Math.min(89, root.camPitch - dy * 0.35));
         }
+        onReleased: root.camChanged()
         onWheel: (w) => {
             var f = (w.angleDelta.y > 0) ? 0.88 : 1.136;
             root.camDist = Math.max(0.15, Math.min(4.0, root.camDist * f));
+            root.camChanged();
         }
     }
 

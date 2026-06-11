@@ -43,7 +43,7 @@ if _QML_DIR.is_dir():
     os.environ.setdefault("QML2_IMPORT_PATH", str(_QML_DIR))
     os.environ.setdefault("QML_IMPORT_PATH", str(_QML_DIR))
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QDoubleValidator, QFont, QColor
 from PySide6.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QLineEdit, QVBoxLayout,
@@ -184,20 +184,25 @@ class MotorControl(QGroupBox):
         root.setContentsMargins(14, 16, 14, 14)
         root.setSpacing(9)
 
-        # 状态行
+        # 状态行（ActPos 下面单独一行「相对中心」，避免挤在一格里显示不全）
         root.addWidget(self._section("状态"))
         st = QGridLayout()
         st.setHorizontalSpacing(10)
         st.setVerticalSpacing(6)
-        for i, name in enumerate(STATUS_FIELDS):
-            tag = QLabel(name)
+        rows = []
+        for name in STATUS_FIELDS:
+            rows.append((name, name))
+            if name == "ActPos":
+                rows.append(("相对中心", "RelCtr"))
+        for i, (label, key) in enumerate(rows):
+            tag = QLabel(label)
             tag.setStyleSheet("color:#7b8494;font-weight:600;")
             val = QLabel("--")
             val.setStyleSheet(_VAL_STYLE)
             val.setAlignment(Qt.AlignCenter)
             st.addWidget(tag, i, 0)
             st.addWidget(val, i, 1)
-            self.status_vals[name] = val
+            self.status_vals[key] = val
         st.setColumnStretch(1, 1)
         root.addLayout(st)
 
@@ -373,10 +378,16 @@ class MotorControl(QGroupBox):
             if lbl is None:
                 continue
             if val is None:
-                lbl.setText("--"); lbl.setStyleSheet(_VAL_STYLE); continue
+                lbl.setText("--"); lbl.setStyleSheet(_VAL_STYLE)
+                if name == "ActPos":
+                    self.status_vals["RelCtr"].setText("--")
+                continue
             if name == "ActPos":
-                lbl.setText(f"{fnum(val)}  (相对中心 {fsign(val - self.center)})")
+                lbl.setText(fnum(val))
                 lbl.setStyleSheet(_VAL_STYLE)
+                rc = self.status_vals["RelCtr"]
+                rc.setText(fsign(val - self.center))
+                rc.setStyleSheet(_VAL_STYLE)
             elif name == "ActVel":
                 lbl.setText(fnum(val)); lbl.setStyleSheet(_VAL_STYLE)
             else:
@@ -556,6 +567,12 @@ class DeviceTab(QWidget):
         qml_path, glb_path = self.assets
         self.viewer = Viewer3DWidget(qml_path, glb_path)
         self.viewer.ready_changed.connect(self._on_viewer_ready)
+        # 视角持久化：用户拖动/缩放后把 yaw/pitch/dist 记进配置，防抖 0.8s 落盘
+        self.viewer.camera_changed.connect(self._on_cam_changed)
+        self._cam_save_timer = QTimer(self)
+        self._cam_save_timer.setSingleShot(True)
+        self._cam_save_timer.setInterval(800)
+        self._cam_save_timer.timeout.connect(self.ctrl.save_cfg)
         # QQuickWidget.setSource 同步：QML 可能在 __init__ 里就 Ready 了，
         # 这时 connect 接不到信号 → 手动补一次，把 center/scale/方向推下去。
         if self.viewer.is_ready:
@@ -624,11 +641,18 @@ class DeviceTab(QWidget):
         vg.setColumnStretch(1, 1)
         return viz
 
+    def _on_cam_changed(self, yaw: float, pitch: float, dist: float):
+        v = self._viz()
+        v["cam_yaw"], v["cam_pitch"], v["cam_dist"] = yaw, pitch, dist
+        self._cam_save_timer.start()
+
     def _on_viewer_ready(self, ok: bool):
         if not ok or not self.viewer:
             return
         v = self._viz()
         self._push_scale(v[self._scale_field()])
+        # 恢复上次的视角（首次用 motors.py 里的默认值）
+        self.viewer.set_camera(v["cam_yaw"], v["cam_pitch"], v["cam_dist"])
         if self.viz_kind == "focus":
             for m in self.viz_motors:
                 self.viewer.set_motor_center(m, self.ctrl.cfg["motors"][str(m)]["center"])

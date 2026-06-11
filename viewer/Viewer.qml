@@ -29,11 +29,14 @@ Item {
     // 内部状态：运动节点列表 [{node, base:vector3d}]，processModel 填充
     property var movingNodes: []
 
-    // ===== 相机轨道参数（鼠标拖动改它们） =====
-    property real camYaw:   -55    // 绕世界 Y 轴方位角，默认略带 3/4 角，一眼看出是 3D
-    property real camPitch: -18    // 俯仰角
-    property real camDist:  1.3    // 相机到 pivot 的距离（米）
+    // ===== 相机轨道参数（鼠标拖动改它们；启动时 Python 用存盘值覆盖） =====
+    property real camYaw:   -35    // 绕世界 Y 轴方位角
+    property real camPitch: -8     // 俯仰角
+    property real camDist:  1.10   // 相机到 pivot 的距离（米）
     property vector3d camCenter: Qt.vector3d(0, 0, 0)  // pivot 世界中心，processModel 填
+
+    // 用户拖动/缩放后发出 → Python 把当前视角写进 motor_config.json，下次启动恢复
+    signal camChanged()
 
     // 任何配置变化都立即重算位移
     onPhysPosChanged:    applyOffset()
@@ -130,9 +133,11 @@ Item {
             root.camYaw   -= dx * 0.35;
             root.camPitch  = Math.max(-89, Math.min(89, root.camPitch - dy * 0.35));
         }
+        onReleased: root.camChanged()
         onWheel: (w) => {
             var f = (w.angleDelta.y > 0) ? 0.88 : 1.136;
             root.camDist = Math.max(0.25, Math.min(6.0, root.camDist * f));
+            root.camChanged();
         }
     }
 
@@ -273,9 +278,8 @@ Item {
         }
         movingNodes = moving;
 
-        // 相机 pivot 放到模型世界中心（balsam 场景无 bounds，按手测 GLB 体积写死）。
-        var mcx = 0.024, mcy = -0.005, mcz = 0.030;
-        root.camCenter = Qt.vector3d(-mcy, mcx, mcz);
+        // 相机 pivot：塔身竖直中段（实测取景调定），模型整体居中不顶天/裁脚。
+        root.camCenter = Qt.vector3d(0.005, 0.16, 0.030);
 
         hud.text = "升降台 3D 预览  ·  可动件 " + moving.length + " 块";
         applyOffset();
