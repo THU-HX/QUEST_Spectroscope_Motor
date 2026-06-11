@@ -27,10 +27,21 @@ Item {
     property real camYaw:   -60
     property real camPitch: -15
     property real camDist:  0.75
-    property vector3d camCenter: Qt.vector3d(0, 0.19, -0.02)
+    property vector3d camCenter: Qt.vector3d(0, 0.19, -0.02)   // pivot（启动时被存盘值覆盖）
 
     // 用户拖动/缩放后发出 → Python 把当前视角写进 motor_config.json，下次启动恢复
     signal camChanged()
+
+    // 右键拖动平移：camCenter 沿相机平面移动，模型跟手；松开后随视角一起存盘
+    function panBy(dx, dy) {
+        var k = camDist * 0.0012;
+        var yr = camYaw * Math.PI / 180, pr = camPitch * Math.PI / 180;
+        var rX = Math.cos(yr),                rZ = -Math.sin(yr);
+        var uX = Math.sin(pr) * Math.sin(yr), uY = Math.cos(pr), uZ = Math.sin(pr) * Math.cos(yr);
+        camCenter = Qt.vector3d(camCenter.x - rX * dx * k + uX * dy * k,
+                                camCenter.y +               uY * dy * k,
+                                camCenter.z - rZ * dx * k + uZ * dy * k);
+    }
 
     // 每扇门：[{node, baseP:vector3d, baseQ:quaternion}]
     property var leftNodes: []
@@ -78,12 +89,15 @@ Item {
 
     MouseArea {
         anchors.fill: parent
+        acceptedButtons: Qt.LeftButton | Qt.RightButton
         property real lastX: 0; property real lastY: 0
         onPressed: (m) => { lastX = m.x; lastY = m.y; }
         onPositionChanged: (m) => {
-            root.camYaw  -= (m.x - lastX) * 0.35;
-            root.camPitch = Math.max(-89, Math.min(89, root.camPitch - (m.y - lastY) * 0.35));
+            var dx = m.x - lastX, dy = m.y - lastY;
             lastX = m.x; lastY = m.y;
+            if (m.buttons & Qt.RightButton) { root.panBy(dx, dy); return; }   // 右键拖 = 平移
+            root.camYaw  -= dx * 0.35;
+            root.camPitch = Math.max(-89, Math.min(89, root.camPitch - dy * 0.35));
         }
         onReleased: root.camChanged()
         onWheel: (w) => { root.camDist = Math.max(0.15, Math.min(5.0, root.camDist * ((w.angleDelta.y > 0) ? 0.88 : 1.136))); root.camChanged(); }
@@ -92,7 +106,7 @@ Item {
     Rectangle { anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; height: 70; color: "#000"; opacity: 0.55 }
     Text { id: hud; text: "loading model ..."; color: "#fff"; font.family: "monospace"; font.pixelSize: 13; anchors.left: parent.left; anchors.top: parent.top; anchors.margins: 6 }
     Text { id: posHud; text: "M7 = -- · M8 = --"; color: "#88ffaa"; font.family: "monospace"; font.pixelSize: 13; anchors.left: parent.left; anchors.top: hud.bottom; anchors.margins: 6 }
-    Text { text: "左键拖=转视角  ·  滚轮=缩放"; color: "#8899bb"; font.family: "monospace"; font.pixelSize: 12; anchors.left: parent.left; anchors.top: posHud.bottom; anchors.margins: 6 }
+    Text { text: "左键拖=转视角 · 右键拖=平移 · 滚轮=缩放"; color: "#8899bb"; font.family: "monospace"; font.pixelSize: 12; anchors.left: parent.left; anchors.top: posHud.bottom; anchors.margins: 6 }
 
     property var bakedRoot: null
     Component.onCompleted: {

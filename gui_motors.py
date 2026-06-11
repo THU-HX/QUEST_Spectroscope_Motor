@@ -641,9 +641,10 @@ class DeviceTab(QWidget):
         vg.setColumnStretch(1, 1)
         return viz
 
-    def _on_cam_changed(self, yaw: float, pitch: float, dist: float):
+    def _on_cam_changed(self, yaw, pitch, dist, cx, cy, cz):
         v = self._viz()
         v["cam_yaw"], v["cam_pitch"], v["cam_dist"] = yaw, pitch, dist
+        v["cam_cx"], v["cam_cy"], v["cam_cz"] = cx, cy, cz
         self._cam_save_timer.start()
 
     def _on_viewer_ready(self, ok: bool):
@@ -651,8 +652,9 @@ class DeviceTab(QWidget):
             return
         v = self._viz()
         self._push_scale(v[self._scale_field()])
-        # 恢复上次的视角（首次用 motors.py 里的默认值）
+        # 恢复上次的视角与平移位置（首次用 motors.py 里的默认值）
         self.viewer.set_camera(v["cam_yaw"], v["cam_pitch"], v["cam_dist"])
+        self.viewer.set_cam_center(v["cam_cx"], v["cam_cy"], v["cam_cz"])
         if self.viz_kind == "focus":
             for m in self.viz_motors:
                 self.viewer.set_motor_center(m, self.ctrl.cfg["motors"][str(m)]["center"])

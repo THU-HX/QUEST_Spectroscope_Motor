@@ -23,7 +23,8 @@ from PySide6.QtQuickWidgets import QQuickWidget
 class Viewer3DWidget(QQuickWidget):
 
     ready_changed = Signal(bool)
-    camera_changed = Signal(float, float, float)   # yaw, pitch, dist（用户拖动/缩放后发出）
+    # yaw, pitch, dist, cx, cy, cz（用户左键转/右键平移/滚轮缩放后发出）
+    camera_changed = Signal(float, float, float, float, float, float)
 
     def __init__(self, qml_path: Path, model_path: Path, parent=None):
         super().__init__(parent)
@@ -107,19 +108,25 @@ class Viewer3DWidget(QQuickWidget):
         self._set_prop("dirFB", 1 if int(dir_fb) >= 0 else -1)
         self._set_prop("dirLR", 1 if int(dir_lr) >= 0 else -1)
 
-    # --- 视角持久化：恢复 / 读取相机（四种 viewer 都有 camYaw/camPitch/camDist）---
+    # --- 视角持久化：恢复 / 读取相机（四种 viewer 都有 camYaw/camPitch/camDist/camCenter）---
     def set_camera(self, yaw: float, pitch: float, dist: float):
         self._set_prop("camYaw", float(yaw))
         self._set_prop("camPitch", float(pitch))
         self._set_prop("camDist", float(dist))
 
+    def set_cam_center(self, cx: float, cy: float, cz: float):
+        from PySide6.QtGui import QVector3D
+        self._set_prop("camCenter", QVector3D(float(cx), float(cy), float(cz)))
+
     def _on_qml_cam_changed(self):
         root = self.rootObject()
         if root is None:
             return
+        c = root.property("camCenter")
         self.camera_changed.emit(float(root.property("camYaw")),
                                  float(root.property("camPitch")),
-                                 float(root.property("camDist")))
+                                 float(root.property("camDist")),
+                                 float(c.x()), float(c.y()), float(c.z()))
 
     # --- 哈特曼门（旋转）用：度/计数 比例 + 左右门方向 ---
     def set_deg_scale(self, deg_per_unit: float):

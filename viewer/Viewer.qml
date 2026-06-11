@@ -33,10 +33,21 @@ Item {
     property real camYaw:   -35    // 绕世界 Y 轴方位角
     property real camPitch: -8     // 俯仰角
     property real camDist:  1.10   // 相机到 pivot 的距离（米）
-    property vector3d camCenter: Qt.vector3d(0, 0, 0)  // pivot 世界中心，processModel 填
+    property vector3d camCenter: Qt.vector3d(0.005, 0.13, 0.030)  // pivot（启动时被存盘值覆盖）
 
     // 用户拖动/缩放后发出 → Python 把当前视角写进 motor_config.json，下次启动恢复
     signal camChanged()
+
+    // 右键拖动平移：camCenter 沿相机平面移动，模型跟手；松开后随视角一起存盘
+    function panBy(dx, dy) {
+        var k = camDist * 0.0012;
+        var yr = camYaw * Math.PI / 180, pr = camPitch * Math.PI / 180;
+        var rX = Math.cos(yr),                rZ = -Math.sin(yr);                                   // 相机右
+        var uX = Math.sin(pr) * Math.sin(yr), uY = Math.cos(pr), uZ = Math.sin(pr) * Math.cos(yr);  // 相机上
+        camCenter = Qt.vector3d(camCenter.x - rX * dx * k + uX * dy * k,
+                                camCenter.y +               uY * dy * k,
+                                camCenter.z - rZ * dx * k + uZ * dy * k);
+    }
 
     // 任何配置变化都立即重算位移
     onPhysPosChanged:    applyOffset()
@@ -129,9 +140,13 @@ Item {
             var dy = m.y - lastY;
             lastX = m.x;
             lastY = m.y;
-            // 鼠标往右拖，模型应跟手往右转 → camYaw 减；往下拖同理。两个都取负号。
-            root.camYaw   -= dx * 0.35;
-            root.camPitch  = Math.max(-89, Math.min(89, root.camPitch - dy * 0.35));
+            if (m.buttons & Qt.RightButton) {
+                root.panBy(dx, dy);           // 右键拖 = 平移模型位置
+            } else {
+                // 左键拖 = 转视角。鼠标往右拖，模型应跟手往右转 → camYaw 减。
+                root.camYaw   -= dx * 0.35;
+                root.camPitch  = Math.max(-89, Math.min(89, root.camPitch - dy * 0.35));
+            }
         }
         onReleased: root.camChanged()
         onWheel: (w) => {
@@ -172,7 +187,7 @@ Item {
     }
     Text {
         id: helpHud
-        text: "左键拖=转视角  ·  滚轮=缩放"
+        text: "左键拖=转视角 · 右键拖=平移 · 滚轮=缩放"
         color: "#8899bb"
         font.family: "monospace"
         font.pixelSize: 12
@@ -278,8 +293,8 @@ Item {
         }
         movingNodes = moving;
 
-        // 相机 pivot：塔身竖直中段（实测取景调定），模型整体居中不顶天/裁脚。
-        root.camCenter = Qt.vector3d(0.005, 0.16, 0.030);
+        // 相机 pivot 用属性默认值（启动时 Python 会推存盘值），这里不再覆盖，
+        // 否则会把恢复的视角中心冲掉。
 
         hud.text = "升降台 3D 预览  ·  可动件 " + moving.length + " 块";
         applyOffset();

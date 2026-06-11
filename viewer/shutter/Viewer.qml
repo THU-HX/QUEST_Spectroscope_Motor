@@ -36,10 +36,21 @@ Item {
     property real camYaw:   -20    // 绕世界 Y 轴方位角
     property real camPitch: -14    // 俯仰角
     property real camDist:  1.30   // 相机到 pivot 的距离（米）
-    property vector3d camCenter: Qt.vector3d(0, 0, 0)
+    property vector3d camCenter: Qt.vector3d(-0.13, 0.0, 0.0)   // pivot（启动时被存盘值覆盖）
 
     // 用户拖动/缩放后发出 → Python 把当前视角写进 motor_config.json，下次启动恢复
     signal camChanged()
+
+    // 右键拖动平移：camCenter 沿相机平面移动，模型跟手；松开后随视角一起存盘
+    function panBy(dx, dy) {
+        var k = camDist * 0.0012;
+        var yr = camYaw * Math.PI / 180, pr = camPitch * Math.PI / 180;
+        var rX = Math.cos(yr),                rZ = -Math.sin(yr);
+        var uX = Math.sin(pr) * Math.sin(yr), uY = Math.cos(pr), uZ = Math.sin(pr) * Math.cos(yr);
+        camCenter = Qt.vector3d(camCenter.x - rX * dx * k + uX * dy * k,
+                                camCenter.y +               uY * dy * k,
+                                camCenter.z - rZ * dx * k + uZ * dy * k);
+    }
 
     onPhysPosChanged:    applyOffset()
     onCenterPhysChanged: applyOffset()
@@ -115,8 +126,12 @@ Item {
             var dy = m.y - lastY;
             lastX = m.x;
             lastY = m.y;
-            root.camYaw   -= dx * 0.35;
-            root.camPitch  = Math.max(-89, Math.min(89, root.camPitch - dy * 0.35));
+            if (m.buttons & Qt.RightButton) {
+                root.panBy(dx, dy);           // 右键拖 = 平移模型位置
+            } else {
+                root.camYaw   -= dx * 0.35;
+                root.camPitch  = Math.max(-89, Math.min(89, root.camPitch - dy * 0.35));
+            }
         }
         onReleased: root.camChanged()
         onWheel: (w) => {
@@ -156,7 +171,7 @@ Item {
     }
     Text {
         id: helpHud
-        text: "左键拖=转视角  ·  滚轮=缩放"
+        text: "左键拖=转视角 · 右键拖=平移 · 滚轮=缩放"
         color: "#8899bb"
         font.family: "monospace"
         font.pixelSize: 12
@@ -257,8 +272,7 @@ Item {
         }
         movingNodes = moving;
 
-        // 相机 pivot：快门模块世界中心（按手测 GLB 体积写死，可被 Python set 覆盖）
-        root.camCenter = Qt.vector3d(-0.13, 0.0, 0.0);
+        // 相机 pivot 用属性默认值（启动时 Python 推存盘值），这里不再覆盖。
 
         hud.text = "机械快门 3D 预览  ·  可动件 " + moving.length + " 支";
         applyOffset();

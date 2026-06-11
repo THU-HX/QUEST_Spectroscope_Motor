@@ -35,11 +35,22 @@ Item {
     property real camYaw:   -52
     property real camPitch: -16
     property real camDist:  1.18
-    // 瞄点抬高到模型竖直中段（y=-0.09），模型在画面里整体下移、不再顶到上沿
-    property vector3d camCenter: Qt.vector3d(0.17, -0.09, -0.03)
+    // 瞄点：竖直取模型中段（不顶上沿）；水平沿相机右向量左移过 → 模型整体右移居中
+    property vector3d camCenter: Qt.vector3d(0.135, -0.09, -0.075)
 
     // 用户拖动/缩放后发出 → Python 把当前视角写进 motor_config.json，下次启动恢复
     signal camChanged()
+
+    // 右键拖动平移：camCenter 沿相机平面移动，模型跟手；松开后随视角一起存盘
+    function panBy(dx, dy) {
+        var k = camDist * 0.0012;
+        var yr = camYaw * Math.PI / 180, pr = camPitch * Math.PI / 180;
+        var rX = Math.cos(yr),                rZ = -Math.sin(yr);
+        var uX = Math.sin(pr) * Math.sin(yr), uY = Math.cos(pr), uZ = Math.sin(pr) * Math.cos(yr);
+        camCenter = Qt.vector3d(camCenter.x - rX * dx * k + uX * dy * k,
+                                camCenter.y +               uY * dy * k,
+                                camCenter.z - rZ * dx * k + uZ * dy * k);
+    }
 
     // 每套：{green:[{node,base}], cam:[{node,base}], mf, ml}
     property var insts: []
@@ -93,12 +104,15 @@ Item {
 
     MouseArea {
         anchors.fill: parent
+        acceptedButtons: Qt.LeftButton | Qt.RightButton
         property real lastX: 0; property real lastY: 0
         onPressed: (m) => { lastX = m.x; lastY = m.y; }
         onPositionChanged: (m) => {
-            root.camYaw  -= (m.x - lastX) * 0.35;
-            root.camPitch = Math.max(-89, Math.min(89, root.camPitch - (m.y - lastY) * 0.35));
+            var dx = m.x - lastX, dy = m.y - lastY;
             lastX = m.x; lastY = m.y;
+            if (m.buttons & Qt.RightButton) { root.panBy(dx, dy); return; }   // 右键拖 = 平移
+            root.camYaw  -= dx * 0.35;
+            root.camPitch = Math.max(-89, Math.min(89, root.camPitch - dy * 0.35));
         }
         onReleased: root.camChanged()
         onWheel: (w) => { root.camDist = Math.max(0.2, Math.min(6.0, root.camDist * ((w.angleDelta.y > 0) ? 0.88 : 1.136))); root.camChanged(); }
