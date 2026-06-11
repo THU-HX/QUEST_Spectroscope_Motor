@@ -158,7 +158,6 @@ Item {
     }
 
     function processModel() {
-        var clay = Qt.rgba(0.72, 0.74, 0.77, 1.0);
         var newInsts = [];
         var mf = [1, 3], ml = [2, 4];
         for (var ii = 0; ii < 2; ++ii) {
@@ -183,7 +182,7 @@ Item {
             }
             for (var si = 0; si < seenMats.length; ++si) {
                 var sm = seenMats[si];
-                try { if ("metalness" in sm) sm.metalness = 0.0; if ("roughness" in sm) sm.roughness = 0.55; if ("baseColor" in sm) sm.baseColor = clay; } catch (e) {}
+                try { if ("metalness" in sm && sm.metalness > 0.5) { sm.metalness = 0.15; if ("roughness" in sm && sm.roughness < 0.4) sm.roughness = 0.5; } } catch (e) {}
             }
             newInsts.push({ nodes: nodes, mf: mf[ii], ml: ml[ii] });
         }

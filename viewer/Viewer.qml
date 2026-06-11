@@ -279,15 +279,15 @@ Item {
             for (var j = 0; j < kids.length; ++j) stack.push(kids[j]);
         }
 
-        // 关键：烤出来的 PrincipledMaterial 很多 metalness=1，没有环境贴图就全黑。
-        // 统一改成浅灰非金属 + 中等粗糙度，4 盏方向光下得到 Blender solid 那样的观感。
-        var clay = Qt.rgba(0.72, 0.74, 0.77, 1.0);
+        // 保留模型原色。只修「metalness=1 无环境贴图渲成纯黑」：金属度高的调低、
+        // 粗糙度太低的适当加，baseColor 一律不动（原始配色直接回来）。
         for (var si = 0; si < seenMats.length; ++si) {
             var sm = seenMats[si];
             try {
-                if ("metalness" in sm) sm.metalness = 0.0;
-                if ("roughness" in sm) sm.roughness = 0.55;
-                if ("baseColor" in sm) sm.baseColor = clay;
+                if ("metalness" in sm && sm.metalness > 0.5) {
+                    sm.metalness = 0.15;
+                    if ("roughness" in sm && sm.roughness < 0.4) sm.roughness = 0.5;
+                }
             } catch (e) { /* 个别材质类型没这些属性 */ }
         }
 

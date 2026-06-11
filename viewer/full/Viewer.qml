@@ -80,10 +80,14 @@ Item {
     readonly property var hart2Pat:  ["哈特曼门板-2", "哈特曼门加强筋-3", "哈特曼门加强筋-4"]
     readonly property var hidePatterns: [
         "gb_fastener", "gb_socket", "washer", "screw", "nut",
-        "接近传感器", "线光源", "current camera", "气动密封圈", "光电开关"
+        "接近传感器", "线光源", "current camera", "气动密封圈", "光电开关",
+        "罩壳"   // 外壳板直接隐藏：装置和光路都在壳里
     ]
-    // 外壳板做半透明：装置和光路都在壳里，不透就什么都看不见
-    readonly property var coverPat: ["罩壳"]
+    // 四个装置整体高亮配色（醒目区分；其余件保留模型原色）
+    readonly property var hlFocusPat: ["@fa", "@fb", "上层-", "下层-", "sys07", "波纹管"]
+    readonly property var hlLiftPat:  ["升降台", "sys05-棱栅", "棱栅", "sys03-光栅"]
+    readonly property var hlShutPat:  ["快门"]
+    readonly property var hlHartPat:  ["哈特曼门"]
     function matchAny(name, pats) {
         var lc = (name || "").toLowerCase();
         for (var i = 0; i < pats.length; ++i) if (lc.indexOf(pats[i].toLowerCase()) !== -1) return true;
@@ -113,6 +117,12 @@ Item {
         DirectionalLight { eulerRotation.x: -20; eulerRotation.y:  150; brightness: 1.0 }
         DirectionalLight { eulerRotation.x: -20; eulerRotation.y: -110; brightness: 1.0 }
         DirectionalLight { eulerRotation.x:  60; eulerRotation.y:    0; brightness: 0.7 }
+
+        // 四装置高亮材质（整组替换上去，醒目区分；避开模型自带的橙/粉/浅绿）
+        PrincipledMaterial { id: hlMatFocus; baseColor: "#ff2d95"; metalness: 0.0; roughness: 0.45 }  // 调焦+相机=品红
+        PrincipledMaterial { id: hlMatLift;  baseColor: "#00c853"; metalness: 0.0; roughness: 0.45 }  // 光栅切换=绿
+        PrincipledMaterial { id: hlMatShut;  baseColor: "#ffd600"; metalness: 0.0; roughness: 0.45 }  // 快门=亮黄
+        PrincipledMaterial { id: hlMatHart;  baseColor: "#00e5ff"; metalness: 0.0; roughness: 0.45 }  // 哈特曼门=青
 
         // 整机模型挂这（拍平的世界系，无需再旋转——世界 y 已是竖直向上）
         Node { id: modelOrient }
@@ -174,7 +184,7 @@ Item {
         // 内置 #Cylinder 高 100、径 100，沿局部 y → 缩放到 len 长、6mm 粗，再转向
         var qml = "import QtQuick; import QtQuick3D; Model { source: \"#Cylinder\"; " +
             "position: Qt.vector3d(" + (ax+bx)/2 + "," + (ay+by)/2 + "," + (az+bz)/2 + "); " +
-            "scale: Qt.vector3d(0.00012, " + (len/100) + ", 0.00012); " +
+            "scale: Qt.vector3d(0.00025, " + (len/100) + ", 0.00025); " +
             "materials: [ DefaultMaterial { lighting: DefaultMaterial.NoLighting; diffuseColor: \"" + color + "\" } ] }";
         var m = Qt.createQmlObject(qml, lightPath);
         // 把局部 y 转到段方向：rotation = 从 (0,1,0) 到 dir 的四元数
@@ -201,7 +211,7 @@ Item {
         var R = [[-0.04, 0.17, -0.15], [0.31, 0.16, -0.16], [0.54, 0.15, -0.14],
                  [0.69, 0.21, -0.14], [0.87, 0.12, -0.18]];
         var i;
-        for (i = 0; i + 1 < W.length; ++i) seg(W[i], W[i+1], "#ffee88");
+        for (i = 0; i + 1 < W.length; ++i) seg(W[i], W[i+1], "#ffffff");
         for (i = 0; i + 1 < B.length; ++i) seg(B[i], B[i+1], "#4da6ff");
         for (i = 0; i + 1 < R.length; ++i) seg(R[i], R[i+1], "#ff5544");
     }
@@ -229,7 +239,13 @@ Item {
             if (matchAny(nm, hidePatterns)) { n.visible = false; }
             else if (n.position !== undefined && n.rotation !== undefined) {
                 if (n.geometry || (n.materials && n.materials.length > 0)) total++;
-                if (matchAny(nm, coverPat) && n.opacity !== undefined) n.opacity = 0.16;
+                // 四装置整组换成高亮材质（其余件保留模型原色）
+                if (n.materials && n.materials.length > 0) {
+                    if (matchAny(nm, hlFocusPat))     n.materials = [hlMatFocus];
+                    else if (matchAny(nm, hlLiftPat)) n.materials = [hlMatLift];
+                    else if (matchAny(nm, hlShutPat)) n.materials = [hlMatShut];
+                    else if (matchAny(nm, hlHartPat)) n.materials = [hlMatHart];
+                }
                 var rec = { node: n, baseP: Qt.vector3d(n.x, n.y, n.z),
                             baseQ: Qt.quaternion(n.rotation.scalar, n.rotation.x, n.rotation.y, n.rotation.z),
                             lrOnly: matchAny(nm, focLrOnly) };
@@ -246,10 +262,16 @@ Item {
             var kids = gather(n);
             for (var j = 0; j < kids.length; ++j) stack.push(kids[j]);
         }
-        var clay = Qt.rgba(0.72, 0.74, 0.77, 1.0);
+        // 保留模型原色！只修「metalness=1 无环境贴图渲成纯黑」的问题：
+        // 金属度高的材质调低并适当加粗糙度，baseColor 一律不动。
         for (var si = 0; si < seenMats.length; ++si) {
             var sm = seenMats[si];
-            try { if ("metalness" in sm) sm.metalness = 0.0; if ("roughness" in sm) sm.roughness = 0.55; if ("baseColor" in sm) sm.baseColor = clay; } catch (e) {}
+            try {
+                if ("metalness" in sm && sm.metalness > 0.5) {
+                    sm.metalness = 0.15;
+                    if ("roughness" in sm && sm.roughness < 0.4) sm.roughness = 0.5;
+                }
+            } catch (e) {}
         }
         liftNodes = lift; shutNodes = shut; faNodes = fa; fbNodes = fb; h1Nodes = h1; h2Nodes = h2;
         hud.text = "整机 3D · 件" + total + " · 升降" + lift.length + " 快门" + shut.length

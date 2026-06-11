@@ -159,10 +159,9 @@ Item {
             var kids = gather(n);
             for (var j = 0; j < kids.length; ++j) stack.push(kids[j]);
         }
-        var clay = Qt.rgba(0.72, 0.74, 0.77, 1.0);
         for (var si = 0; si < seenMats.length; ++si) {
             var sm = seenMats[si];
-            try { if ("metalness" in sm) sm.metalness = 0.0; if ("roughness" in sm) sm.roughness = 0.55; if ("baseColor" in sm) sm.baseColor = clay; } catch (e) {}
+            try { if ("metalness" in sm && sm.metalness > 0.5) { sm.metalness = 0.15; if ("roughness" in sm && sm.roughness < 0.4) sm.roughness = 0.5; } } catch (e) {}
         }
         leftNodes = L; rightNodes = R;
         hud.text = "哈特曼门 3D · 左门(电机7)件 " + L.length + " / 右门(电机8)件 " + R.length + " · 绕门轴旋转";

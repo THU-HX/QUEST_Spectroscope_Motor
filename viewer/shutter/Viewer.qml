@@ -259,13 +259,14 @@ Item {
             for (var j = 0; j < kids.length; ++j) stack.push(kids[j]);
         }
 
-        var clay = Qt.rgba(0.72, 0.74, 0.77, 1.0);
+        // 保留模型原色，只修高金属度无环境贴图渲黑的问题
         for (var si = 0; si < seenMats.length; ++si) {
             var sm = seenMats[si];
             try {
-                if ("metalness" in sm) sm.metalness = 0.0;
-                if ("roughness" in sm) sm.roughness = 0.55;
-                if ("baseColor" in sm) sm.baseColor = clay;
+                if ("metalness" in sm && sm.metalness > 0.5) {
+                    sm.metalness = 0.15;
+                    if ("roughness" in sm && sm.roughness < 0.4) sm.roughness = 0.5;
+                }
             } catch (e) { /* 个别材质类型没这些属性 */ }
         }
 
