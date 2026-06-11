@@ -299,15 +299,18 @@ Item {
             var kids = gather(n);
             for (var j = 0; j < kids.length; ++j) stack.push(kids[j]);
         }
-        // 非装置件统一哑光中灰（接近 Blender 默认粘土）：不过曝、形状细节清楚，
-        // 白色光束在灰底上才显眼。状态组节点随后整体替换为绿/红/灰材质，不受影响。
-        var matte = Qt.rgba(0.60, 0.60, 0.585, 1.0);
+        // 非装置件统一「缎面浅灰」：比中灰亮一档 + 低粗糙度（方向光能打出高光）
+        // + 薄清漆层 → 有金属质感、不发闷；同时仍比纯白暗，白色光束依旧显眼。
+        // 状态组节点随后整体替换为绿/红/灰材质，不受影响。
+        var satin = Qt.rgba(0.68, 0.69, 0.71, 1.0);
         for (var si = 0; si < seenMats.length; ++si) {
             var sm = seenMats[si];
             try {
                 if ("metalness" in sm) sm.metalness = 0.0;
-                if ("roughness" in sm) sm.roughness = 0.7;
-                if ("baseColor" in sm) sm.baseColor = matte;
+                if ("roughness" in sm) sm.roughness = 0.38;
+                if ("baseColor" in sm) sm.baseColor = satin;
+                if ("specularAmount" in sm) sm.specularAmount = 1.0;
+                if ("clearcoatAmount" in sm) sm.clearcoatAmount = 0.25;
             } catch (e) {}
         }
         liftNodes = lift; shutNodes = shut; faNodes = fa; fbNodes = fb; h1Nodes = h1; h2Nodes = h2;
