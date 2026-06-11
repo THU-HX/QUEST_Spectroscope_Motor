@@ -307,9 +307,9 @@ Item {
             var sm = seenMats[si];
             try {
                 if ("metalness" in sm) sm.metalness = 0.0;
-                if ("roughness" in sm) sm.roughness = 0.38;
+                if ("roughness" in sm) sm.roughness = 0.6;
                 if ("baseColor" in sm) sm.baseColor = satin;
-                if ("specularAmount" in sm) sm.specularAmount = 1.0;
+                if ("specularAmount" in sm) sm.specularAmount = 0.6;
                 if ("clearcoatAmount" in sm) sm.clearcoatAmount = 0.25;
             } catch (e) {}
         }
