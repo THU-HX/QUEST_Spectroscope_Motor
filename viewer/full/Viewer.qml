@@ -40,13 +40,13 @@ Item {
     // ---- 光路开关 ----
     property bool lightOn: true
 
-    // ---- 各装置电机状态（Python 每轮询推送；true=正常绿 / false=异常红）----
-    property bool okFA: true; property bool okFB: true
-    property bool okLift: true; property bool okShut: true
-    property bool okH1: true; property bool okH2: true
-    onOkFAChanged: applyStatus(); onOkFBChanged: applyStatus()
-    onOkLiftChanged: applyStatus(); onOkShutChanged: applyStatus()
-    onOkH1Changed: applyStatus(); onOkH2Changed: applyStatus()
+    // ---- 各装置电机状态（Python 每轮询推送）：0=断连/未知(灰) 1=正常(绿) 2=异常(红) ----
+    property int stFA: 0; property int stFB: 0
+    property int stLift: 0; property int stShut: 0
+    property int stH1: 0; property int stH2: 0
+    onStFAChanged: applyStatus(); onStFBChanged: applyStatus()
+    onStLiftChanged: applyStatus(); onStShutChanged: applyStatus()
+    onStH1Changed: applyStatus(); onStH2Changed: applyStatus()
 
     // ---- 相机 ----
     property real camYaw:   -35
@@ -89,7 +89,10 @@ Item {
     readonly property var hidePatterns: [
         "gb_fastener", "gb_socket", "washer", "screw", "nut",
         "接近传感器", "线光源", "current camera", "气动密封圈", "光电开关",
-        "罩壳"   // 外壳板直接隐藏：装置和光路都在壳里
+        "罩壳",   // 外壳板直接隐藏：装置和光路都在壳里
+        // 悬浮件（外筒被裁后镜片/胶垫悬空，或源模型本身悬空的辅助件）
+        "波前准直镜系统", "wfss", "ebom-freeparts", "导星镜筒模块",
+        "图纸自建", "硅胶", "胶垫", "胶圈"
     ]
     // 四装置按「电机状态」着色：正常=绿 / 异常(AmpFault·SoftLimit≠0)=红；
     // 其余所有件统一淡色（只看形状，不看花色）。
@@ -135,6 +138,7 @@ Item {
         // 状态材质：四装置整组按电机状态换色
         PrincipledMaterial { id: matOK;  baseColor: "#3fbf6f"; metalness: 0.0; roughness: 0.5 }   // 正常=绿
         PrincipledMaterial { id: matBad; baseColor: "#e5484d"; metalness: 0.0; roughness: 0.5 }   // 异常=红
+        PrincipledMaterial { id: matUnk; baseColor: "#73777d"; metalness: 0.0; roughness: 0.6 }   // 断连/未知=灰
 
         // 整机模型挂这（拍平的世界系，无需再旋转——世界 y 已是竖直向上）
         Node { id: modelOrient }
@@ -195,7 +199,7 @@ Item {
         // 内置 #Cylinder 高 100、径 100，沿局部 y → 缩放到 len 长、4mm 细，再转向
         var qml = "import QtQuick; import QtQuick3D; Model { source: \"#Cylinder\"; " +
             "position: Qt.vector3d(" + (ax+bx)/2 + "," + (ay+by)/2 + "," + (az+bz)/2 + "); " +
-            "scale: Qt.vector3d(0.00004, " + (len/100) + ", 0.00004); " +
+            "scale: Qt.vector3d(0.00006, " + (len/100) + ", 0.00006); " +
             "materials: [ DefaultMaterial { lighting: DefaultMaterial.NoLighting; diffuseColor: \"" + color + "\" } ] }";
         var m = Qt.createQmlObject(qml, lightPath);
         var ux = dx/len, uy = dy/len, uz = dz/len;
@@ -219,7 +223,7 @@ Item {
         var p1x = uy*0 - uz*ry, p1y = uz*rx - ux*0, p1z = ux*ry - uy*rx;   // dir × ref
         var n1 = Math.sqrt(p1x*p1x + p1y*p1y + p1z*p1z); p1x/=n1; p1y/=n1; p1z/=n1;
         var p2x = uy*p1z - uz*p1y, p2y = uz*p1x - ux*p1z, p2z = ux*p1y - uy*p1x;
-        var R = 0.018, N = 5;                              // 束半径 18mm，5 根
+        var R = 0.026, N = 9;                              // 束半径 26mm，9 根
         for (var k = 0; k < N; ++k) {
             var ang = k * 2 * Math.PI / N;
             var ox = (p1x*Math.cos(ang) + p2x*Math.sin(ang)) * R;
@@ -295,35 +299,37 @@ Item {
             var kids = gather(n);
             for (var j = 0; j < kids.length; ++j) stack.push(kids[j]);
         }
-        // 非装置件统一淡色（比早期粘土更浅）：形状细节靠光影呈现，不要花色。
-        // 状态组的节点随后整体替换为绿/红材质，不受这里影响。
-        var pale = Qt.rgba(0.85, 0.86, 0.88, 1.0);
+        // 非装置件统一哑光中灰（接近 Blender 默认粘土）：不过曝、形状细节清楚，
+        // 白色光束在灰底上才显眼。状态组节点随后整体替换为绿/红/灰材质，不受影响。
+        var matte = Qt.rgba(0.60, 0.60, 0.585, 1.0);
         for (var si = 0; si < seenMats.length; ++si) {
             var sm = seenMats[si];
             try {
                 if ("metalness" in sm) sm.metalness = 0.0;
-                if ("roughness" in sm) sm.roughness = 0.55;
-                if ("baseColor" in sm) sm.baseColor = pale;
+                if ("roughness" in sm) sm.roughness = 0.7;
+                if ("baseColor" in sm) sm.baseColor = matte;
             } catch (e) {}
         }
         liftNodes = lift; shutNodes = shut; faNodes = fa; fbNodes = fb; h1Nodes = h1; h2Nodes = h2;
         sFA = _sFA; sFB = _sFB; sLift = _sLift; sShut = _sShut; sH1 = _sH1; sH2 = _sH2; sHFrame = _sHF;
-        hud.text = "整机 3D · 件" + total + " · 绿=电机正常 红=故障/限位 · 升降" + lift.length
+        hud.text = "整机 3D · 件" + total + " · 绿=正常 红=故障/限位/未使能 灰=断连 · 升降" + lift.length
                  + " 快门" + shut.length + " 调焦A" + fa.length + "/B" + fb.length
                  + " 哈特曼" + h1.length + "/" + h2.length;
         applyStatus();
         applyOffset();
     }
 
-    // 状态着色：组内全部 Model 换绿/红材质
-    function paint(list, ok) {
-        for (var i = 0; i < list.length; ++i) list[i].materials = [ok ? matOK : matBad];
+    // 状态着色：组内全部 Model 按三态换材质（0灰/1绿/2红）
+    function paint(list, st) {
+        var m = (st === 2) ? matBad : (st === 1) ? matOK : matUnk;
+        for (var i = 0; i < list.length; ++i) list[i].materials = [m];
     }
+    function worst(a, b) { return (a === 2 || b === 2) ? 2 : (a === 0 || b === 0) ? 0 : 1; }
     function applyStatus() {
-        paint(sFA, okFA); paint(sFB, okFB);
-        paint(sLift, okLift); paint(sShut, okShut);
-        paint(sH1, okH1); paint(sH2, okH2);
-        paint(sHFrame, okH1 && okH2);
+        paint(sFA, stFA); paint(sFB, stFB);
+        paint(sLift, stLift); paint(sShut, stShut);
+        paint(sH1, stH1); paint(sH2, stH2);
+        paint(sHFrame, worst(stH1, stH2));
     }
 
     function dM(pos, ctr, scale) { return (pos - ctr) * scale / 1000.0; }

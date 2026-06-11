@@ -789,7 +789,7 @@ class FullTab(QWidget):
         self.chk_light = QCheckBox("显示光路（白光→分色镜→蓝/红两支）")
         self.chk_light.setChecked(bool(self._viz().get("light_on", 1)))
         self.chk_light.toggled.connect(self._on_light)
-        hint = QLabel("装置颜色：绿=电机正常 红=故障/限位 · 比例/方向沿用装置页 · 调焦A=蓝相机 B=红相机")
+        hint = QLabel("装置颜色：绿=正常 红=故障/限位/未使能 灰=断连 · 比例/方向沿用装置页 · 调焦A=蓝相机 B=红相机")
         hint.setStyleSheet("color:#7b8494;")
         bar.addWidget(self.chk_light)
         bar.addStretch(1)
@@ -846,15 +846,32 @@ class FullTab(QWidget):
         self._cam_save_timer.start()
 
     @staticmethod
-    def _ok(st: dict, motors) -> bool:
-        """该装置的电机组是否正常：AmpFault / SoftLimit 非 0 视为异常（无数据视为正常）。"""
+    def _state(st: dict, motors) -> int:
+        """装置三态：0=断连/无数据(灰) 1=正常(绿) 2=异常(红)。
+        异常 = AmpFault≠0 或 SoftLimit≠0 或 AmpEna=0（用户定义）。"""
+        worst = 1
         for m in motors:
-            d = st.get(m) or {}
-            if (d.get("AmpFault") or 0) != 0:
-                return False
-            if (d.get("SoftLimit") or 0) != 0:
-                return False
-        return True
+            d = st.get(m)
+            if d is None or d.get("AmpEna") is None:
+                worst = min(worst, 0)        # 无数据 → 未知
+                continue
+            if (d.get("AmpFault") or 0) != 0 or (d.get("SoftLimit") or 0) != 0 \
+                    or int(d.get("AmpEna") or 0) == 0:
+                return 2                     # 任一异常 → 整组红
+        return worst
+
+    def _push_states(self, st: dict):
+        self.viewer.set_prop("stFA",   self._state(st, (1, 2)))
+        self.viewer.set_prop("stFB",   self._state(st, (3, 4)))
+        self.viewer.set_prop("stLift", self._state(st, (5,)))
+        self.viewer.set_prop("stShut", self._state(st, (6,)))
+        self.viewer.set_prop("stH1",   self._state(st, (7,)))
+        self.viewer.set_prop("stH2",   self._state(st, (8,)))
+
+    def push_disconnected(self):
+        """断连：全部装置转灰。"""
+        if self.viewer:
+            self._push_states({})
 
     def push_positions(self, st: dict):
         if not self.viewer:
@@ -862,13 +879,7 @@ class FullTab(QWidget):
         for m in self.viz_motors:
             if m in st and st[m].get("ActPos") is not None:
                 self.viewer.set_motor_pos(m, float(st[m]["ActPos"]))
-        # 装置状态着色：绿=正常 / 红=故障·限位
-        self.viewer.set_prop("okFA",   self._ok(st, (1, 2)))
-        self.viewer.set_prop("okFB",   self._ok(st, (3, 4)))
-        self.viewer.set_prop("okLift", self._ok(st, (5,)))
-        self.viewer.set_prop("okShut", self._ok(st, (6,)))
-        self.viewer.set_prop("okH1",   self._ok(st, (7,)))
-        self.viewer.set_prop("okH2",   self._ok(st, (8,)))
+        self._push_states(st)
 
     def push_center(self, motor: int):
         if self.viewer:
@@ -1160,20 +1171,27 @@ class MainWindow(QMainWindow):
         await self.pmac.close()
         self.log("已断开")
         self._set_connected(False)
+        if self._full_tab:
+            self._full_tab.push_disconnected()   # 整机页：装置转灰
 
     @asyncSlot()
     async def _on_ecat(self):
         await self.run("ECAT[0].enable", self.pmac.ecat_enable)
 
     async def _poll_loop(self):
+        fails = 0
         try:
             while True:
                 try:
                     st = await self.pmac.motor_status_many(M.ALL_MOTORS)
+                    fails = 0
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
                     self.log(f"poll 失败: {e!r}")
+                    fails += 1
+                    if fails >= 3 and self._full_tab:
+                        self._full_tab.push_disconnected()   # 连续失败视为断连 → 灰
                     await asyncio.sleep(POLL_S)
                     continue
                 for m, mc in self.controls.items():
