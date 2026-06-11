@@ -762,6 +762,101 @@ class DeviceTab(QWidget):
             self.viewer.set_center(center)
 
 
+class FullTab(QWidget):
+    """「整机」页：全幅整机 3D（8 电机联动 + 光路开关）。
+
+    运动比例/方向不在本页设——沿用各装置页的 viz 配置（用户在装置页调好的
+    比例和方向，这里实时同步），本页自己只存 光路开关 + 相机视角。
+    """
+
+    def __init__(self, ctrl: "MainWindow"):
+        super().__init__()
+        self.ctrl = ctrl
+        self.dev_key = "full"
+        self.viz_motors = list(range(1, 9))
+        self.viz_kind = "full"
+
+        qml_path, glb_path = M.viewer_assets("full")
+        self.viewer = Viewer3DWidget(qml_path, glb_path)
+        self.viewer.ready_changed.connect(self._on_ready)
+        self.viewer.camera_changed.connect(self._on_cam_changed)
+        self._cam_save_timer = QTimer(self)
+        self._cam_save_timer.setSingleShot(True)
+        self._cam_save_timer.setInterval(800)
+        self._cam_save_timer.timeout.connect(self.ctrl.save_cfg)
+
+        bar = QHBoxLayout()
+        self.chk_light = QCheckBox("显示光路（白光→分色镜→蓝/红两支）")
+        self.chk_light.setChecked(bool(self._viz().get("light_on", 1)))
+        self.chk_light.toggled.connect(self._on_light)
+        hint = QLabel("各装置的显示比例/方向沿用装置页设置 · 调焦A=蓝相机 B=红相机")
+        hint.setStyleSheet("color:#7b8494;")
+        bar.addWidget(self.chk_light)
+        bar.addStretch(1)
+        bar.addWidget(hint)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(10, 10, 10, 10)
+        lay.addWidget(self.viewer, stretch=1)
+        lay.addLayout(bar)
+
+        if self.viewer.is_ready:
+            self._on_ready(True)
+
+    def _viz(self) -> dict:
+        return self.ctrl.cfg["viz"]["full"]
+
+    def _on_ready(self, ok: bool):
+        if not ok or not self.viewer:
+            return
+        v = self._viz()
+        self.viewer.set_camera(v["cam_yaw"], v["cam_pitch"], v["cam_dist"])
+        self.viewer.set_cam_center(v["cam_cx"], v["cam_cy"], v["cam_cz"])
+        self.viewer.set_prop("lightOn", bool(v.get("light_on", 1)))
+        for m in self.viz_motors:
+            self.viewer.set_motor_center(m, self.ctrl.cfg["motors"][str(m)]["center"])
+        self.refresh_device_viz()
+
+    def refresh_device_viz(self):
+        """把各装置页的比例/方向推给整机 viewer（装置页改了即跟着变）。"""
+        if not self.viewer:
+            return
+        cz = self.ctrl.cfg["viz"]
+        self.viewer.set_prop("focMm",  float(cz["focus"]["mm_per_unit"]))
+        self.viewer.set_prop("focFb",  int(cz["focus"]["dir_fb"]))
+        self.viewer.set_prop("focLr",  int(cz["focus"]["dir_lr"]))
+        self.viewer.set_prop("liftMm", float(cz["grating"]["mm_per_unit"]))
+        self.viewer.set_prop("liftDir", int(cz["grating"]["direction"]))
+        self.viewer.set_prop("shutMm", float(cz["shutter"]["mm_per_unit"]))
+        self.viewer.set_prop("shutDir", int(cz["shutter"]["direction"]))
+        self.viewer.set_prop("hartDeg", float(cz["hartmann"]["deg_per_unit"]))
+        self.viewer.set_prop("hartL",  int(cz["hartmann"]["dir_left"]))
+        self.viewer.set_prop("hartR",  int(cz["hartmann"]["dir_right"]))
+
+    def _on_light(self, on: bool):
+        self._viz()["light_on"] = 1 if on else 0
+        if self.viewer:
+            self.viewer.set_prop("lightOn", bool(on))
+        self.ctrl.save_cfg()
+
+    def _on_cam_changed(self, yaw, pitch, dist, cx, cy, cz):
+        v = self._viz()
+        v["cam_yaw"], v["cam_pitch"], v["cam_dist"] = yaw, pitch, dist
+        v["cam_cx"], v["cam_cy"], v["cam_cz"] = cx, cy, cz
+        self._cam_save_timer.start()
+
+    def push_positions(self, st: dict):
+        if not self.viewer:
+            return
+        for m in self.viz_motors:
+            if m in st and st[m].get("ActPos") is not None:
+                self.viewer.set_motor_pos(m, float(st[m]["ActPos"]))
+
+    def push_center(self, motor: int):
+        if self.viewer:
+            self.viewer.set_motor_center(motor, self.ctrl.cfg["motors"][str(motor)]["center"])
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -818,6 +913,12 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self._overview = OverviewTab(self)
         self.tabs.addTab(self._overview, "总览")
+        # 整机页（资产存在才挂；加载约 1600 件，首屏稍慢属正常）
+        self._full_tab: FullTab | None = None
+        if M.viewer_assets("full"):
+            self._full_tab = FullTab(self)
+            self.tabs.addTab(self._full_tab, "整机")
+            self._viz_tabs.append(self._full_tab)
         for dev in M.DEVICES:
             tab = DeviceTab(dev, self)
             self.tabs.addTab(tab, dev["name"])
@@ -886,6 +987,9 @@ class MainWindow(QMainWindow):
             M.save_config(self.cfg)
         except OSError as e:
             self.log(f"配置写盘失败: {e!r}")
+        # 装置页改了比例/方向 → 整机页跟着变
+        if self._full_tab:
+            self._full_tab.refresh_device_viz()
 
     def on_motor_cfg_changed(self, motor: int):
         for tab in self._viz_tabs:

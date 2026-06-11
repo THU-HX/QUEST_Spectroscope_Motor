@@ -1,9 +1,10 @@
 """离屏渲染整个多装置 GUI 并截图（不连 PMAC，注入假状态），供远端自测。
 
 用法:
-    python snap_gui.py <out.png> <tab_index> [m5] [m6] [m7] [m8]
+    python snap_gui.py <out.png> <tab_index> [m5] [m6] [m7] [m8] [delay_ms]
 
-tab_index: 0=总览 1=调焦 2=光栅切换 3=机械快门 4=哈特曼门
+tab_index（有整机资产时）: 0=总览 1=整机 2=调焦 3=光栅切换 4=机械快门 5=哈特曼门
+delay_ms: 截图前等待（整机页 1600 件加载慢，建议 >= 9000）
 """
 import sys
 from pathlib import Path
@@ -27,6 +28,7 @@ def main():
     m6 = float(sys.argv[4]) if len(sys.argv) > 4 else 0.0
     m7 = float(sys.argv[5]) if len(sys.argv) > 5 else 0.0
     m8 = float(sys.argv[6]) if len(sys.argv) > 6 else 0.0
+    delay = int(sys.argv[7]) if len(sys.argv) > 7 else 2600
 
     app = QApplication(sys.argv)
     w = G.MainWindow()
@@ -50,7 +52,7 @@ def main():
         print(f"saved={ok} {out} {img.width()}x{img.height()}")
         app.quit()
 
-    QTimer.singleShot(2600, grab)
+    QTimer.singleShot(delay, grab)
     app.exec()
 
 

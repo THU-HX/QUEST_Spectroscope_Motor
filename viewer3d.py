@@ -128,6 +128,10 @@ class Viewer3DWidget(QQuickWidget):
                                  float(root.property("camDist")),
                                  float(c.x()), float(c.y()), float(c.z()))
 
+    # --- 通用属性直写（整机页推各装置比例/方向、光路开关等）---
+    def set_prop(self, name: str, value):
+        self._set_prop(name, value)
+
     # --- 哈特曼门（旋转）用：度/计数 比例 + 左右门方向 ---
     def set_deg_scale(self, deg_per_unit: float):
         self._set_prop("degPerUnit", float(deg_per_unit))

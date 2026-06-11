@@ -54,6 +54,8 @@ VIZ_DEVICES = {
     "shutter":  dict(subdir="shutter",  motors=[6],          kind="single"),
     "focus":    dict(subdir="focus",    motors=[1, 2, 3, 4], kind="focus"),
     "hartmann": dict(subdir="hartmann", motors=[7, 8],       kind="hartmann"),
+    # 整机页：8 电机全联动 + 光路；比例/方向沿用各装置页的 viz 配置
+    "full":     dict(subdir="full",     motors=[1, 2, 3, 4, 5, 6, 7, 8], kind="full"),
 }
 
 # 默认显示参数（按装置 key，纯视觉、可在界面里改）：
@@ -75,6 +77,10 @@ DEFAULT_VIZ_BY_DEVICE = {
     "hartmann": {"deg_per_unit": 0.0001, "dir_left": 1, "dir_right": 1,
                  "cam_yaw": -60.0, "cam_pitch": -15.0, "cam_dist": 0.75,
                  "cam_cx": 0.0, "cam_cy": 0.19, "cam_cz": -0.02},
+    # 整机页：light_on=光路开关；运动比例/方向不在这里（沿用各装置页配置）
+    "full":     {"light_on": 1,
+                 "cam_yaw": -35.0, "cam_pitch": -18.0, "cam_dist": 2.1,
+                 "cam_cx": 0.0, "cam_cy": 0.12, "cam_cz": 0.0},
 }
 
 
