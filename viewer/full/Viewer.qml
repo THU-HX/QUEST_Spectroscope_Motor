@@ -40,6 +40,14 @@ Item {
     // ---- 光路开关 ----
     property bool lightOn: true
 
+    // ---- 各装置电机状态（Python 每轮询推送；true=正常绿 / false=异常红）----
+    property bool okFA: true; property bool okFB: true
+    property bool okLift: true; property bool okShut: true
+    property bool okH1: true; property bool okH2: true
+    onOkFAChanged: applyStatus(); onOkFBChanged: applyStatus()
+    onOkLiftChanged: applyStatus(); onOkShutChanged: applyStatus()
+    onOkH1Changed: applyStatus(); onOkH2Changed: applyStatus()
+
     // ---- 相机 ----
     property real camYaw:   -35
     property real camPitch: -18
@@ -83,11 +91,14 @@ Item {
         "接近传感器", "线光源", "current camera", "气动密封圈", "光电开关",
         "罩壳"   // 外壳板直接隐藏：装置和光路都在壳里
     ]
-    // 四个装置整体高亮配色（醒目区分；其余件保留模型原色）
-    readonly property var hlFocusPat: ["@fa", "@fb", "上层-", "下层-", "sys07", "波纹管"]
-    readonly property var hlLiftPat:  ["升降台", "sys05-棱栅", "棱栅", "sys03-光栅"]
-    readonly property var hlShutPat:  ["快门"]
-    readonly property var hlHartPat:  ["哈特曼门"]
+    // 四装置按「电机状态」着色：正常=绿 / 异常(AmpFault·SoftLimit≠0)=红；
+    // 其余所有件统一淡色（只看形状，不看花色）。
+    readonly property var stFocusAPat: ["@fa", "上层-a", "下层-a"]   // 调焦A(蓝) M1/M2
+    readonly property var stFocusBPat: ["@fb", "上层-b", "下层-b"]   // 调焦B(红) M3/M4
+    readonly property var stLiftPat:   ["升降台"]                     // 光栅切换 M5（整塔）
+    readonly property var stShutPat:   ["快门"]                       // 快门 M6（整模块）
+    // 哈特曼门：两扇门各随自己电机；其余机架件随 M7&M8 联合状态
+    readonly property var stHartAllPat: ["哈特曼门"]
     function matchAny(name, pats) {
         var lc = (name || "").toLowerCase();
         for (var i = 0; i < pats.length; ++i) if (lc.indexOf(pats[i].toLowerCase()) !== -1) return true;
@@ -98,6 +109,9 @@ Item {
     property var liftNodes: []; property var shutNodes: []
     property var faNodes: [];   property var fbNodes: []      // {.., lrOnly:bool}
     property var h1Nodes: [];   property var h2Nodes: []
+    // 状态着色组（带材质的 Model 列表）
+    property var sFA: []; property var sFB: []; property var sLift: []
+    property var sShut: []; property var sH1: []; property var sH2: []; property var sHFrame: []
     property var h1Pivot: Qt.vector3d(-0.4215, 0, -0.066)
     property var h2Pivot: Qt.vector3d(-0.4215, 0, -0.214)
 
@@ -118,11 +132,9 @@ Item {
         DirectionalLight { eulerRotation.x: -20; eulerRotation.y: -110; brightness: 1.0 }
         DirectionalLight { eulerRotation.x:  60; eulerRotation.y:    0; brightness: 0.7 }
 
-        // 四装置高亮材质（整组替换上去，醒目区分；避开模型自带的橙/粉/浅绿）
-        PrincipledMaterial { id: hlMatFocus; baseColor: "#ff2d95"; metalness: 0.0; roughness: 0.45 }  // 调焦+相机=品红
-        PrincipledMaterial { id: hlMatLift;  baseColor: "#00c853"; metalness: 0.0; roughness: 0.45 }  // 光栅切换=绿
-        PrincipledMaterial { id: hlMatShut;  baseColor: "#ffd600"; metalness: 0.0; roughness: 0.45 }  // 快门=亮黄
-        PrincipledMaterial { id: hlMatHart;  baseColor: "#00e5ff"; metalness: 0.0; roughness: 0.45 }  // 哈特曼门=青
+        // 状态材质：四装置整组按电机状态换色
+        PrincipledMaterial { id: matOK;  baseColor: "#3fbf6f"; metalness: 0.0; roughness: 0.5 }   // 正常=绿
+        PrincipledMaterial { id: matBad; baseColor: "#e5484d"; metalness: 0.0; roughness: 0.5 }   // 异常=红
 
         // 整机模型挂这（拍平的世界系，无需再旋转——世界 y 已是竖直向上）
         Node { id: modelOrient }
@@ -175,29 +187,46 @@ Item {
         if (comp.status === Component.Loading) comp.statusChanged.connect(onReady); else onReady();
     }
 
-    // ===== 光路构建：每段一根发光细圆柱 =====
-    function seg(a, b, color) {
-        var ax = a[0], ay = a[1], az = a[2], bx = b[0], by = b[1], bz = b[2];
+    // ===== 光路构建：每段一束（5 根细光线沿截面圆周排布）=====
+    function rayCyl(ax, ay, az, bx, by, bz, color) {
         var dx = bx-ax, dy = by-ay, dz = bz-az;
         var len = Math.sqrt(dx*dx + dy*dy + dz*dz);
         if (len < 1e-6) return;
-        // 内置 #Cylinder 高 100、径 100，沿局部 y → 缩放到 len 长、6mm 粗，再转向
+        // 内置 #Cylinder 高 100、径 100，沿局部 y → 缩放到 len 长、4mm 细，再转向
         var qml = "import QtQuick; import QtQuick3D; Model { source: \"#Cylinder\"; " +
             "position: Qt.vector3d(" + (ax+bx)/2 + "," + (ay+by)/2 + "," + (az+bz)/2 + "); " +
-            "scale: Qt.vector3d(0.00025, " + (len/100) + ", 0.00025); " +
+            "scale: Qt.vector3d(0.00004, " + (len/100) + ", 0.00004); " +
             "materials: [ DefaultMaterial { lighting: DefaultMaterial.NoLighting; diffuseColor: \"" + color + "\" } ] }";
         var m = Qt.createQmlObject(qml, lightPath);
-        // 把局部 y 转到段方向：rotation = 从 (0,1,0) 到 dir 的四元数
         var ux = dx/len, uy = dy/len, uz = dz/len;
         var d = Math.max(-1, Math.min(1, uy));            // dot((0,1,0), dir)
         var angle = Math.acos(d);
-        // 轴 = y × dir = (uz, 0, -ux)（注意叉积方向）
-        var axx = uz, axy = 0, axz = -ux;
+        var axx = uz, axy = 0, axz = -ux;                 // 轴 = y × dir
         var an = Math.sqrt(axx*axx + axz*axz);
-        if (an < 1e-6) { axx = 1; axz = 0; an = 1; }      // 平行 y 时任取轴
+        if (an < 1e-6) { axx = 1; axz = 0; an = 1; }
         axx /= an; axz /= an;
         var s = Math.sin(angle/2);
         m.rotation = Qt.quaternion(Math.cos(angle/2), axx*s, axy*s, axz*s);
+    }
+
+    function seg(a, b, color) {
+        var dx = b[0]-a[0], dy = b[1]-a[1], dz = b[2]-a[2];
+        var len = Math.sqrt(dx*dx + dy*dy + dz*dz);
+        if (len < 1e-6) return;
+        var ux = dx/len, uy = dy/len, uz = dz/len;
+        // 垂直基底 p1/p2（光束截面平面）
+        var rx = Math.abs(uy) < 0.9 ? 0 : 1, ry = Math.abs(uy) < 0.9 ? 1 : 0;
+        var p1x = uy*0 - uz*ry, p1y = uz*rx - ux*0, p1z = ux*ry - uy*rx;   // dir × ref
+        var n1 = Math.sqrt(p1x*p1x + p1y*p1y + p1z*p1z); p1x/=n1; p1y/=n1; p1z/=n1;
+        var p2x = uy*p1z - uz*p1y, p2y = uz*p1x - ux*p1z, p2z = ux*p1y - uy*p1x;
+        var R = 0.018, N = 5;                              // 束半径 18mm，5 根
+        for (var k = 0; k < N; ++k) {
+            var ang = k * 2 * Math.PI / N;
+            var ox = (p1x*Math.cos(ang) + p2x*Math.sin(ang)) * R;
+            var oy = (p1y*Math.cos(ang) + p2y*Math.sin(ang)) * R;
+            var oz = (p1z*Math.cos(ang) + p2z*Math.sin(ang)) * R;
+            rayCyl(a[0]+ox, a[1]+oy, a[2]+oz, b[0]+ox, b[1]+oy, b[2]+oz, color);
+        }
     }
 
     function buildLightPath() {
@@ -228,6 +257,7 @@ Item {
     function processModel() {
         if (!bakedRoot) return;
         var lift = [], shut = [], fa = [], fb = [], h1 = [], h2 = [], seenMats = [];
+        var _sFA = [], _sFB = [], _sLift = [], _sShut = [], _sH1 = [], _sH2 = [], _sHF = [];
         var stack = [bakedRoot], safety = 0, total = 0;
         while (stack.length > 0 && safety < 30000) {
             safety++;
@@ -239,12 +269,15 @@ Item {
             if (matchAny(nm, hidePatterns)) { n.visible = false; }
             else if (n.position !== undefined && n.rotation !== undefined) {
                 if (n.geometry || (n.materials && n.materials.length > 0)) total++;
-                // 四装置整组换成高亮材质（其余件保留模型原色）
+                // 四装置 → 状态着色组（其余件统一淡色，见下方材质遍历）
                 if (n.materials && n.materials.length > 0) {
-                    if (matchAny(nm, hlFocusPat))     n.materials = [hlMatFocus];
-                    else if (matchAny(nm, hlLiftPat)) n.materials = [hlMatLift];
-                    else if (matchAny(nm, hlShutPat)) n.materials = [hlMatShut];
-                    else if (matchAny(nm, hlHartPat)) n.materials = [hlMatHart];
+                    if (matchAny(nm, stFocusAPat))      _sFA.push(n);
+                    else if (matchAny(nm, stFocusBPat)) _sFB.push(n);
+                    else if (matchAny(nm, stLiftPat))   _sLift.push(n);
+                    else if (matchAny(nm, stShutPat))   _sShut.push(n);
+                    else if (matchAny(nm, hart1Pat))    _sH1.push(n);
+                    else if (matchAny(nm, hart2Pat))    _sH2.push(n);
+                    else if (matchAny(nm, stHartAllPat)) _sHF.push(n);
                 }
                 var rec = { node: n, baseP: Qt.vector3d(n.x, n.y, n.z),
                             baseQ: Qt.quaternion(n.rotation.scalar, n.rotation.x, n.rotation.y, n.rotation.z),
@@ -262,21 +295,35 @@ Item {
             var kids = gather(n);
             for (var j = 0; j < kids.length; ++j) stack.push(kids[j]);
         }
-        // 保留模型原色！只修「metalness=1 无环境贴图渲成纯黑」的问题：
-        // 金属度高的材质调低并适当加粗糙度，baseColor 一律不动。
+        // 非装置件统一淡色（比早期粘土更浅）：形状细节靠光影呈现，不要花色。
+        // 状态组的节点随后整体替换为绿/红材质，不受这里影响。
+        var pale = Qt.rgba(0.85, 0.86, 0.88, 1.0);
         for (var si = 0; si < seenMats.length; ++si) {
             var sm = seenMats[si];
             try {
-                if ("metalness" in sm && sm.metalness > 0.5) {
-                    sm.metalness = 0.15;
-                    if ("roughness" in sm && sm.roughness < 0.4) sm.roughness = 0.5;
-                }
+                if ("metalness" in sm) sm.metalness = 0.0;
+                if ("roughness" in sm) sm.roughness = 0.55;
+                if ("baseColor" in sm) sm.baseColor = pale;
             } catch (e) {}
         }
         liftNodes = lift; shutNodes = shut; faNodes = fa; fbNodes = fb; h1Nodes = h1; h2Nodes = h2;
-        hud.text = "整机 3D · 件" + total + " · 升降" + lift.length + " 快门" + shut.length
-                 + " 调焦A" + fa.length + "/B" + fb.length + " 哈特曼" + h1.length + "/" + h2.length;
+        sFA = _sFA; sFB = _sFB; sLift = _sLift; sShut = _sShut; sH1 = _sH1; sH2 = _sH2; sHFrame = _sHF;
+        hud.text = "整机 3D · 件" + total + " · 绿=电机正常 红=故障/限位 · 升降" + lift.length
+                 + " 快门" + shut.length + " 调焦A" + fa.length + "/B" + fb.length
+                 + " 哈特曼" + h1.length + "/" + h2.length;
+        applyStatus();
         applyOffset();
+    }
+
+    // 状态着色：组内全部 Model 换绿/红材质
+    function paint(list, ok) {
+        for (var i = 0; i < list.length; ++i) list[i].materials = [ok ? matOK : matBad];
+    }
+    function applyStatus() {
+        paint(sFA, okFA); paint(sFB, okFB);
+        paint(sLift, okLift); paint(sShut, okShut);
+        paint(sH1, okH1); paint(sH2, okH2);
+        paint(sHFrame, okH1 && okH2);
     }
 
     function dM(pos, ctr, scale) { return (pos - ctr) * scale / 1000.0; }

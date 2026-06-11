@@ -789,7 +789,7 @@ class FullTab(QWidget):
         self.chk_light = QCheckBox("显示光路（白光→分色镜→蓝/红两支）")
         self.chk_light.setChecked(bool(self._viz().get("light_on", 1)))
         self.chk_light.toggled.connect(self._on_light)
-        hint = QLabel("各装置的显示比例/方向沿用装置页设置 · 调焦A=蓝相机 B=红相机")
+        hint = QLabel("装置颜色：绿=电机正常 红=故障/限位 · 比例/方向沿用装置页 · 调焦A=蓝相机 B=红相机")
         hint.setStyleSheet("color:#7b8494;")
         bar.addWidget(self.chk_light)
         bar.addStretch(1)
@@ -845,12 +845,30 @@ class FullTab(QWidget):
         v["cam_cx"], v["cam_cy"], v["cam_cz"] = cx, cy, cz
         self._cam_save_timer.start()
 
+    @staticmethod
+    def _ok(st: dict, motors) -> bool:
+        """该装置的电机组是否正常：AmpFault / SoftLimit 非 0 视为异常（无数据视为正常）。"""
+        for m in motors:
+            d = st.get(m) or {}
+            if (d.get("AmpFault") or 0) != 0:
+                return False
+            if (d.get("SoftLimit") or 0) != 0:
+                return False
+        return True
+
     def push_positions(self, st: dict):
         if not self.viewer:
             return
         for m in self.viz_motors:
             if m in st and st[m].get("ActPos") is not None:
                 self.viewer.set_motor_pos(m, float(st[m]["ActPos"]))
+        # 装置状态着色：绿=正常 / 红=故障·限位
+        self.viewer.set_prop("okFA",   self._ok(st, (1, 2)))
+        self.viewer.set_prop("okFB",   self._ok(st, (3, 4)))
+        self.viewer.set_prop("okLift", self._ok(st, (5,)))
+        self.viewer.set_prop("okShut", self._ok(st, (6,)))
+        self.viewer.set_prop("okH1",   self._ok(st, (7,)))
+        self.viewer.set_prop("okH2",   self._ok(st, (8,)))
 
     def push_center(self, motor: int):
         if self.viewer:
