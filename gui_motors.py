@@ -331,7 +331,12 @@ class MotorControl(QGroupBox):
                     break
             else:
                 raise PmacError(f"电机{m} 自动使能失败（AmpEna={ena}），已放弃移动")
-            self.ctrl.log(f"  电机{m} 使能已生效 → 继续移动")
+            if self.mdef["fast"]:
+                # 5-8：AmpEna=1 后驱动还要缓一下，立刻发位置会丢步 → 再稳 1s
+                self.ctrl.log(f"  电机{m} 使能已生效 → 稳定 1s 后移动")
+                await asyncio.sleep(1.0)
+            else:
+                self.ctrl.log(f"  电机{m} 使能已生效 → 继续移动")
         return await move_fn(m, value)
 
     @asyncSlot()
