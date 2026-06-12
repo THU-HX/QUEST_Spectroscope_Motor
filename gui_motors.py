@@ -309,6 +309,28 @@ class MotorControl(QGroupBox):
     async def _on_disable(self):
         await self.ctrl.soft_estop(self.motor)
 
+    async def _move_ensure_enabled(self, move_fn, value):
+        """移动前安全判断：实时读 AmpEna，未使能先 #nj/ 并等确认生效，再执行移动；
+        已使能则直接移动。所有电机一致。
+
+        实时读而不用轮询缓存：缓存最多滞后 0.5s，刚被去使能时会误判。
+        整段跑在同一个在飞任务里，软急停 cancel 能把「使能+移动」一起取消。
+        """
+        m = self.motor
+        var = f"Motor[{m}].AmpEna"
+        ena = (await self.ctrl.pmac.read_vars([var]))[var]
+        if not ena:
+            self.ctrl.log(f"  电机{m} 未使能 → 自动 #{m}j/")
+            await self.ctrl.pmac.motor_enable(m)
+            for _ in range(5):                  # 最多等 1s 确认使能生效
+                await asyncio.sleep(0.2)
+                ena = (await self.ctrl.pmac.read_vars([var]))[var]
+                if ena:
+                    break
+            else:
+                raise PmacError(f"电机{m} 自动使能失败（AmpEna={ena}），已放弃移动")
+        return await move_fn(m, value)
+
     @asyncSlot()
     async def _on_abs(self):
         txt = self.abs_input.text().strip()
@@ -326,7 +348,8 @@ class MotorControl(QGroupBox):
                 f"电机{self.motor} 绝对目标 {fnum(pos)} 超出 [{fnum(self.abs_min)}, {fnum(self.abs_max)}]\n"
                 f"（对应物理 {fnum(phys)}，应在 [{fnum(self.phys_min)}, {fnum(self.phys_max)}]）\n\n已拒绝。")
             return
-        await self.ctrl.run(f"#{self.motor}j={pos}", self.ctrl.pmac.motor_move_abs, self.motor, pos)
+        await self.ctrl.run(f"#{self.motor}j={pos}", self._move_ensure_enabled,
+                            self.ctrl.pmac.motor_move_abs, pos)
 
     @asyncSlot()
     async def _on_rel(self):
@@ -349,7 +372,8 @@ class MotorControl(QGroupBox):
                 f"电机{self.motor} 当前物理 {fnum(cur)}，增量 {fnum(delta)}，落点 {fnum(target)}\n"
                 f"超出 [{fnum(self.phys_min)}, {fnum(self.phys_max)}]\n\n已拒绝。")
             return
-        await self.ctrl.run(f"#{self.motor}j:{delta}", self.ctrl.pmac.motor_move_rel, self.motor, delta)
+        await self.ctrl.run(f"#{self.motor}j:{delta}", self._move_ensure_enabled,
+                            self.ctrl.pmac.motor_move_rel, delta)
 
     # ---- 外部驱动 ----
     def set_connected(self, ok: bool):
