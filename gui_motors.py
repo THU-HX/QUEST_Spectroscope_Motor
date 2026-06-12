@@ -322,13 +322,16 @@ class MotorControl(QGroupBox):
         if not ena:
             self.ctrl.log(f"  电机{m} 未使能 → 自动 #{m}j/")
             await self.ctrl.pmac.motor_enable(m)
-            for _ in range(5):                  # 最多等 1s 确认使能生效
+            # 最多等 4s 确认使能生效：5-8 使能慢，实测 1-2s 才读到 AmpEna=1；
+            # 一读到就立刻继续，1-4 仍是 0.2s 量级。
+            for _ in range(20):
                 await asyncio.sleep(0.2)
                 ena = (await self.ctrl.pmac.read_vars([var]))[var]
                 if ena:
                     break
             else:
                 raise PmacError(f"电机{m} 自动使能失败（AmpEna={ena}），已放弃移动")
+            self.ctrl.log(f"  电机{m} 使能已生效 → 继续移动")
         return await move_fn(m, value)
 
     @asyncSlot()
