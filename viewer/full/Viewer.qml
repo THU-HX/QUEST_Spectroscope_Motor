@@ -40,6 +40,18 @@ Item {
     // ---- 光路开关 ----
     property bool lightOn: true
 
+    // ---- 光路动画 + 遮挡联动 ----
+    // flowPhase 0→1 无限循环，驱动「光子」沿光束前进；电机挡光时下游段隐藏、光子停在挡光处。
+    property real flowPhase: 0
+    NumberAnimation on flowPhase { from: 0; to: 1; duration: 1600; loops: Animation.Infinite; running: true }
+    onFlowPhaseChanged: moveComets()
+    // 挡光阈值（位移/转角幅度超过即视为「关」，可在此微调）
+    property real shutCloseMm: 6.0     // 快门 M6 滑动 ≥ 此值视为挡光 → 下游全灭
+    property real hartCloseDeg: 25.0   // 哈特曼门转角 ≥ 此值视为挡光 → 对应相机支灭
+    property bool blkShut: false        // 快门是否挡光（applyOffset 实时算）
+    property bool blkH1: false           // 左门 M7 是否挡光 → 蓝支
+    property bool blkH2: false           // 右门 M8 是否挡光 → 红支
+
     // ---- 各装置电机状态（Python 每轮询推送）：0=断连/未知(灰) 1=正常(绿) 2=异常(红) ----
     property int stFA: 0; property int stFB: 0
     property int stLift: 0; property int stShut: 0
@@ -191,17 +203,18 @@ Item {
         if (comp.status === Component.Loading) comp.statusChanged.connect(onReady); else onReady();
     }
 
-    // ===== 光路构建：每段一束（5 根细光线沿截面圆周排布）=====
-    function rayCyl(ax, ay, az, bx, by, bz, color) {
+    // ===== 光路：分段绘制 + 光子流动 + 电机挡光联动 =====
+    // 每束 9 根细光线沿截面圆周排布；整段挂在一个 Node 下，便于按挡光整体开关。
+    function rayCyl(parent, ax, ay, az, bx, by, bz, color) {
         var dx = bx-ax, dy = by-ay, dz = bz-az;
         var len = Math.sqrt(dx*dx + dy*dy + dz*dz);
         if (len < 1e-6) return;
-        // 内置 #Cylinder 高 100、径 100，沿局部 y → 缩放到 len 长、4mm 细，再转向
+        // 内置 #Cylinder 高 100、径 100，沿局部 y → 缩放到 len 长、~4mm 细，再转向
         var qml = "import QtQuick; import QtQuick3D; Model { source: \"#Cylinder\"; " +
             "position: Qt.vector3d(" + (ax+bx)/2 + "," + (ay+by)/2 + "," + (az+bz)/2 + "); " +
             "scale: Qt.vector3d(0.00006, " + (len/100) + ", 0.00006); " +
             "materials: [ DefaultMaterial { lighting: DefaultMaterial.NoLighting; diffuseColor: \"" + color + "\" } ] }";
-        var m = Qt.createQmlObject(qml, lightPath);
+        var m = Qt.createQmlObject(qml, parent);
         var ux = dx/len, uy = dy/len, uz = dz/len;
         var d = Math.max(-1, Math.min(1, uy));            // dot((0,1,0), dir)
         var angle = Math.acos(d);
@@ -213,7 +226,7 @@ Item {
         m.rotation = Qt.quaternion(Math.cos(angle/2), axx*s, axy*s, axz*s);
     }
 
-    function seg(a, b, color) {
+    function drawBundle(parent, a, b, color) {
         var dx = b[0]-a[0], dy = b[1]-a[1], dz = b[2]-a[2];
         var len = Math.sqrt(dx*dx + dy*dy + dz*dz);
         if (len < 1e-6) return;
@@ -229,24 +242,122 @@ Item {
             var ox = (p1x*Math.cos(ang) + p2x*Math.sin(ang)) * R;
             var oy = (p1y*Math.cos(ang) + p2y*Math.sin(ang)) * R;
             var oz = (p1z*Math.cos(ang) + p2z*Math.sin(ang)) * R;
-            rayCyl(a[0]+ox, a[1]+oy, a[2]+oz, b[0]+ox, b[1]+oy, b[2]+oz, color);
+            rayCyl(parent, a[0]+ox, a[1]+oy, a[2]+oz, b[0]+ox, b[1]+oy, b[2]+oz, color);
         }
     }
 
+    // 沿折线 pts 走 t∈[0,1]（按真实弧长）取一点
+    function dist3(a, b) { var dx=b[0]-a[0],dy=b[1]-a[1],dz=b[2]-a[2]; return Math.sqrt(dx*dx+dy*dy+dz*dz); }
+    function posAlong(pts, t) {
+        if (!pts || pts.length === 0) return Qt.vector3d(0,0,0);
+        if (pts.length === 1) return Qt.vector3d(pts[0][0],pts[0][1],pts[0][2]);
+        var segLen = [], total = 0, i;
+        for (i = 0; i+1 < pts.length; ++i) { var d = dist3(pts[i],pts[i+1]); segLen.push(d); total += d; }
+        if (total < 1e-9) return Qt.vector3d(pts[0][0],pts[0][1],pts[0][2]);
+        var target = t*total, acc = 0;
+        for (i = 0; i+1 < pts.length; ++i) {
+            if (acc + segLen[i] >= target || i+2 === pts.length) {
+                var f = segLen[i] < 1e-9 ? 0 : (target-acc)/segLen[i];
+                f = Math.max(0, Math.min(1, f));
+                return Qt.vector3d(pts[i][0]+(pts[i+1][0]-pts[i][0])*f,
+                                   pts[i][1]+(pts[i+1][1]-pts[i][1])*f,
+                                   pts[i][2]+(pts[i+1][2]-pts[i][2])*f);
+            }
+            acc += segLen[i];
+        }
+        return Qt.vector3d(pts[pts.length-1][0],pts[pts.length-1][1],pts[pts.length-1][2]);
+    }
+    // 折线第 idx 个节点处的弧长占比（0..1）—— 挡光时光子停在此处
+    function fracAt(pts, idx) {
+        var segLen = [], total = 0, i;
+        for (i = 0; i+1 < pts.length; ++i) { var d = dist3(pts[i],pts[i+1]); segLen.push(d); total += d; }
+        if (total < 1e-9) return 0;
+        var acc = 0; for (i = 0; i < idx && i < segLen.length; ++i) acc += segLen[i];
+        return acc/total;
+    }
+
+    // 段集合 / 光子集合（buildLightPath 填充）
+    property var whitePre: []    // 入射→快门（含两条新增入射段）：常亮
+    property var whitePost: []   // 快门→分色镜：快门挡光时灭
+    property var blueSegs: []    // 蓝支：快门或左门挡光时灭
+    property var redSegs: []     // 红支：快门或右门挡光时灭
+    property var whiteComets: []; property var blueComets: []; property var redComets: []
+    property var whitePts: [];   property var bluePts: [];   property var redPts: []
+    property real whiteShutFrac: 1.0
+
+    function mkSeg(list, a, b, color) {
+        var node = Qt.createQmlObject('import QtQuick3D; Node {}', lightPath);
+        drawBundle(node, a, b, color);
+        list.push(node);
+    }
+    function mkComet(list, color) {
+        var s = Qt.createQmlObject('import QtQuick; import QtQuick3D; Model { source: "#Sphere"; ' +
+            'scale: Qt.vector3d(0.0008,0.0008,0.0008); ' +
+            'materials: [ DefaultMaterial { lighting: DefaultMaterial.NoLighting; diffuseColor: "' + color + '" } ] }', lightPath);
+        list.push({ node: s, off: list.length * 0.33 });
+    }
+
     function buildLightPath() {
-        // 白光：入射 → 快门 → 哈特曼门/准直入口 → 准直出口 → 分色镜
-        var W = [[-0.95, 0.21, -0.14], [-0.58, 0.21, -0.14], [-0.44, 0.20, -0.14],
-                 [-0.04, 0.17, -0.15]];
+        // ===== waypoints（世界系，来自 analyze_full.py 装配中心；微调改坐标即可）=====
+        // 【新增·两段入射光 = 用户白色箭头所指两处】坐标依据左折叠镜(SYS02 平面镜 x≈-0.90)
+        //   给的初值，待现场核对：光从下方左侧进入 → 折到光轴高度 → 接入原白光起点。
+        var ENTRY0 = [-1.00, 0.03,  0.02];   // ① 入射口（下方左侧，偏向镜头侧便于看清，待核对）
+        var ENTRY1 = [-0.90, 0.15, -0.04];   // ② 折叠点（左折叠镜前下方，待核对）
+        var FOLD   = [-0.90, 0.21, -0.14];   // 左折叠镜 = 原白光起点
+        // 白光主段：折叠镜 → 快门 → 准直入口 → 分色镜
+        var SHUT = [-0.58, 0.21, -0.14], COLL = [-0.44, 0.20, -0.14], DICH = [-0.04, 0.17, -0.15];
         // 蓝支：分色镜 → 蓝通道异形平面镜 → 光栅 → 蓝镜筒 → 波纹管 → 蓝CCD(调焦A)
-        var B = [[-0.04, 0.17, -0.15], [-0.17, 0.15, 0.02], [-0.04, 0.16, 0.06],
-                 [0.33, 0.17, 0.14], [0.63, 0.21, 0.21], [0.80, 0.12, 0.21]];
+        var B = [DICH, [-0.17, 0.15, 0.02], [-0.04, 0.16, 0.06], [0.33, 0.17, 0.14], [0.63, 0.21, 0.21], [0.80, 0.12, 0.21]];
         // 红支：分色镜 → 棱栅(升降台上) → 红镜筒 → 波纹管 → 红CCD(调焦B)
-        var R = [[-0.04, 0.17, -0.15], [0.31, 0.16, -0.16], [0.54, 0.15, -0.14],
-                 [0.69, 0.21, -0.14], [0.87, 0.12, -0.18]];
+        var Rr = [DICH, [0.31, 0.16, -0.16], [0.54, 0.15, -0.14], [0.69, 0.21, -0.14], [0.87, 0.12, -0.18]];
+
+        // 白光折线（含两条新段）+ 快门处弧长占比（挡光时光子停这）
+        whitePts = [ENTRY0, ENTRY1, FOLD, SHUT, COLL, DICH];
+        whiteShutFrac = fracAt(whitePts, 3);   // 索引 3 = SHUT
+        bluePts = B; redPts = Rr;
+
+        // 入射→快门（前两段为新增）：常亮
+        mkSeg(whitePre, ENTRY0, ENTRY1, "#ffffff");   // 新段①（下方入射）
+        mkSeg(whitePre, ENTRY1, FOLD,   "#ffffff");   // 新段②（折向光轴）
+        mkSeg(whitePre, FOLD,   SHUT,   "#ffffff");
+        // 快门→分色镜：快门挡光时灭
+        mkSeg(whitePost, SHUT, COLL, "#ffffff");
+        mkSeg(whitePost, COLL, DICH, "#ffffff");
+        // 蓝/红支
         var i;
-        for (i = 0; i + 1 < W.length; ++i) seg(W[i], W[i+1], "#ffffff");
-        for (i = 0; i + 1 < B.length; ++i) seg(B[i], B[i+1], "#4da6ff");
-        for (i = 0; i + 1 < R.length; ++i) seg(R[i], R[i+1], "#ff5544");
+        for (i = 0; i+1 < B.length;  ++i) mkSeg(blueSegs, B[i],  B[i+1],  "#4da6ff");
+        for (i = 0; i+1 < Rr.length; ++i) mkSeg(redSegs,  Rr[i], Rr[i+1], "#ff5544");
+
+        // 光子（流动高亮）：每支 3 颗，沿折线循环前进，相位错开
+        for (i = 0; i < 3; ++i) mkComet(whiteComets, "#ffffff");
+        for (i = 0; i < 3; ++i) mkComet(blueComets,  "#bfe0ff");
+        for (i = 0; i < 3; ++i) mkComet(redComets,   "#ffc0b0");
+
+        updateGates();
+        moveComets();
+    }
+
+    function setVis(list, v) { for (var i = 0; i < list.length; ++i) list[i].visible = v; }
+    function updateGates() {
+        setVis(whitePost, !blkShut);
+        setVis(blueSegs, !(blkShut || blkH1));
+        setVis(redSegs,  !(blkShut || blkH2));
+        moveComets();
+    }
+    function placeComets(list, pts, maxFrac, on) {
+        for (var i = 0; i < list.length; ++i) {
+            var c = list[i];
+            if (!on) { c.node.visible = false; continue; }
+            c.node.visible = root.lightOn;
+            var t = (root.flowPhase + c.off) % 1.0;
+            c.node.position = posAlong(pts, t * maxFrac);
+        }
+    }
+    function moveComets() {
+        if (!whitePts || whitePts.length === 0) return;   // build 之前 no-op
+        placeComets(whiteComets, whitePts, blkShut ? whiteShutFrac : 1.0, true);
+        placeComets(blueComets,  bluePts,  1.0, !(blkShut || blkH1));
+        placeComets(redComets,   redPts,   1.0, !(blkShut || blkH2));
     }
 
     function gather(n) {
@@ -380,11 +491,20 @@ Item {
             nd.node.position = Qt.vector3d(b.x + (nd.lrOnly ? 0 : bFb), b.y, b.z + bLr);
         }
         // 哈特曼门：绕竖直轴旋转
-        rotateGroupY(h1Nodes, h1Pivot, (posM7 - centerM7) * hartDeg * hartL);
-        rotateGroupY(h2Nodes, h2Pivot, (posM8 - centerM8) * hartDeg * hartR);
+        var degH1 = (posM7 - centerM7) * hartDeg * hartL;
+        var degH2 = (posM8 - centerM8) * hartDeg * hartR;
+        rotateGroupY(h1Nodes, h1Pivot, degH1);
+        rotateGroupY(h2Nodes, h2Pivot, degH2);
+
+        // 挡光判定：位移/转角幅度超阈值 → 挡光，联动光路动画（下游灭、光子停）
+        blkShut = Math.abs(dShut * 1000) >= shutCloseMm;
+        blkH1 = Math.abs(degH1) >= hartCloseDeg;
+        blkH2 = Math.abs(degH2) >= hartCloseDeg;
+        updateGates();
 
         posHud.text = "M5升降 " + (dLift*1000).toFixed(1) + "mm · M6快门 " + (dShut*1000).toFixed(1)
-                    + "mm · 门 " + ((posM7-centerM7)*hartDeg*hartL).toFixed(1) + "°/"
-                    + ((posM8-centerM8)*hartDeg*hartR).toFixed(1) + "°";
+                    + "mm" + (blkShut ? "(挡光)" : "(通光)")
+                    + " · 门 " + degH1.toFixed(1) + "°" + (blkH1 ? "(挡)" : "") + "/"
+                    + degH2.toFixed(1) + "°" + (blkH2 ? "(挡)" : "");
     }
 }
