@@ -794,11 +794,27 @@ class DeviceTab(QWidget):
             self.viewer.set_center(center)
 
 
+class _FloatWin(QWidget):
+    """整机预览弹出后的独立顶层窗口；关闭时回调把内容收回到页内。"""
+
+    def __init__(self, on_close):
+        super().__init__()
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self._on_close = on_close
+
+    def closeEvent(self, ev):
+        self._on_close()
+        super().closeEvent(ev)
+
+
 class FullTab(QWidget):
     """「整机」页：全幅整机 3D（8 电机联动 + 光路开关）。
 
     运动比例/方向不在本页设——沿用各装置页的 viz 配置（用户在装置页调好的
     比例和方向，这里实时同步），本页自己只存 光路开关 + 相机视角。
+
+    可「弹出独立窗口」：把整机预览（viewer + 工具条）整体搬到一个独立顶层窗口，
+    便于切到其它装置页边调试电机边看整机机械结构与光路；关闭浮窗即收回页内。
     """
 
     def __init__(self, ctrl: "MainWindow"):
@@ -808,32 +824,136 @@ class FullTab(QWidget):
         self.viz_motors = list(range(1, 9))
         self.viz_kind = "full"
 
-        qml_path, glb_path = M.viewer_assets("full")
-        self.viewer = Viewer3DWidget(qml_path, glb_path)
-        self.viewer.ready_changed.connect(self._on_ready)
-        self.viewer.camera_changed.connect(self._on_cam_changed)
+        self._qml_path, self._glb_path = M.viewer_assets("full")
+        self.viewer: Viewer3DWidget | None = None
+        self._float_win: _FloatWin | None = None
+
         self._cam_save_timer = QTimer(self)
         self._cam_save_timer.setSingleShot(True)
         self._cam_save_timer.setInterval(800)
         self._cam_save_timer.timeout.connect(self.ctrl.save_cfg)
 
-        bar = QHBoxLayout()
+        # 工具条（随 viewer 一起在「页内」/「独立窗口」间搬；只是普通 QWidget，reparent 安全）
+        self._bar = QWidget()
+        bl = QHBoxLayout(self._bar)
+        bl.setContentsMargins(0, 0, 0, 0)
         self.chk_light = QCheckBox("显示光路（白光→分色镜→蓝/红两支）")
         self.chk_light.setChecked(bool(self._viz().get("light_on", 1)))
         self.chk_light.toggled.connect(self._on_light)
+        self.btn_toggle = QPushButton("⧉ 弹出独立窗口")
+        self.btn_toggle.setToolTip("把整机预览弹成独立窗口，可与其它装置页同时查看")
+        self.btn_toggle.clicked.connect(self._toggle_detach)
         hint = QLabel("装置颜色：绿=正常 红=故障/限位/未使能 灰=断连 · 比例/方向沿用装置页 · 调焦A=蓝相机 B=红相机")
         hint.setStyleSheet("color:#7b8494;")
-        bar.addWidget(self.chk_light)
-        bar.addStretch(1)
-        bar.addWidget(hint)
+        bl.addWidget(self.chk_light)
+        bl.addWidget(self.btn_toggle)
+        bl.addStretch(1)
+        bl.addWidget(hint)
 
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(10, 10, 10, 10)
-        lay.addWidget(self.viewer, stretch=1)
-        lay.addLayout(bar)
+        # 页内宿主：docked 时放 [viewer][工具条]
+        self._host = QWidget()
+        self._host_lay = QVBoxLayout(self._host)
+        self._host_lay.setContentsMargins(0, 0, 0, 0)
 
+        # 弹出后页内显示的占位
+        self._placeholder = QWidget()
+        ph = QVBoxLayout(self._placeholder)
+        ph.addStretch(1)
+        ph_lbl = QLabel("整机预览已弹出为独立窗口。\n可切到其它装置页边调试边看；关闭浮窗或点「收回」即可收回本页。")
+        ph_lbl.setAlignment(Qt.AlignCenter)
+        ph_lbl.setStyleSheet("color:#7b8494; font-size:14px;")
+        ph_btn = QPushButton("收回到本页")
+        ph_btn.clicked.connect(self.dock)
+        ph_row = QHBoxLayout(); ph_row.addStretch(1); ph_row.addWidget(ph_btn); ph_row.addStretch(1)
+        ph.addWidget(ph_lbl)
+        ph.addLayout(ph_row)
+        ph.addStretch(1)
+        self._placeholder.hide()
+
+        self._outer = QVBoxLayout(self)
+        self._outer.setContentsMargins(10, 10, 10, 10)
+        self._outer.addWidget(self._host, stretch=1)
+        self._outer.addWidget(self._placeholder, stretch=1)
+
+        self._build_in_host()   # 初始：页内建 viewer
+
+    # ---- viewer 生命周期：弹出/收回时「重建」而非 reparent ----
+    # （QQuickWidget + QtQuick3D 跨窗口 reparent 后静态节点不重绘，故每次新建一个，
+    #   只多 ~数秒重新加载模型，但渲染一定正确。）
+    def _make_viewer(self) -> "Viewer3DWidget":
+        v = Viewer3DWidget(self._qml_path, self._glb_path)
+        v.ready_changed.connect(self._on_ready)
+        v.camera_changed.connect(self._on_cam_changed)
+        return v
+
+    def _build_in_host(self):
+        self._host_lay.addWidget(self._bar)        # 工具条先回页内
+        # 延后建 viewer：让上一个 viewer 的 deleteLater 先处理掉，避免两个重场景同时在显存
+        QTimer.singleShot(0, self._spawn_in_host)
+
+    def _spawn_in_host(self):
+        if self._float_win is not None or self.viewer is not None:
+            return                                 # 状态已变 / 已有
+        self.viewer = self._make_viewer()
+        self._host_lay.insertWidget(0, self.viewer, stretch=1)
         if self.viewer.is_ready:
             self._on_ready(True)
+
+    def _spawn_in_float(self, win, wl):
+        if self._float_win is not win or self.viewer is not None:
+            return
+        self.viewer = self._make_viewer()
+        wl.insertWidget(0, self.viewer, stretch=1)
+        if self.viewer.is_ready:
+            self._on_ready(True)
+
+    def _destroy_viewer(self):
+        if self.viewer is not None:
+            try:
+                self.viewer.ready_changed.disconnect(self._on_ready)
+                self.viewer.camera_changed.disconnect(self._on_cam_changed)
+            except (TypeError, RuntimeError):
+                pass
+            self.viewer.setParent(None)
+            self.viewer.deleteLater()
+            self.viewer = None
+
+    def _toggle_detach(self):
+        self.dock() if self._float_win is not None else self.detach()
+
+    def detach(self):
+        """弹出独立顶层窗口（与主窗其它页可同时查看），viewer 在新窗口里重建。"""
+        if self._float_win is not None:
+            self._float_win.raise_(); self._float_win.activateWindow(); return
+        self._destroy_viewer()
+        self._host.hide(); self._placeholder.show()
+        win = _FloatWin(self._float_closed)
+        win.setWindowTitle("整机预览 · 光路 + 机械联动（独立窗口）")
+        win.resize(1120, 780)
+        wl = QVBoxLayout(win)
+        wl.setContentsMargins(6, 6, 6, 6)
+        wl.addWidget(self._bar)                   # 工具条搬到浮窗（viewer 稍后插到最上）
+        self.btn_toggle.setText("收回到本页")
+        self._float_win = win
+        win.show(); win.raise_(); win.activateWindow()
+        # 延后建 viewer：让旧 viewer 先销毁，避免两个重场景同时占显存
+        QTimer.singleShot(0, lambda: self._spawn_in_float(win, wl))
+
+    def dock(self):
+        """收回（按钮触发）：关掉浮窗，closeEvent 里完成重建。"""
+        if self._float_win is not None:
+            self._float_win.close()
+
+    def _float_closed(self):
+        """浮窗关闭（收回按钮 / × / 主窗退出）→ 销毁浮窗 viewer，页内重建。
+        浮窗自身由 WA_DeleteOnClose 销毁。"""
+        if self._float_win is None:
+            return                                # 主窗退出路径已置空，不在页内重建
+        self._float_win = None
+        self._destroy_viewer()
+        self._build_in_host()                     # 页内新建 viewer（工具条也搬回）
+        self.btn_toggle.setText("⧉ 弹出独立窗口")
+        self._placeholder.hide(); self._host.show()
 
     def _viz(self) -> dict:
         return self.ctrl.cfg["viz"]["full"]
@@ -1242,6 +1362,11 @@ class MainWindow(QMainWindow):
             self._inflight.cancel()
         if self._poll_task and not self._poll_task.done():
             self._poll_task.cancel()
+        # 整机预览若弹成了独立窗口，随主窗一起关掉（置空避免退出时还去页内重建）
+        if self._full_tab and self._full_tab._float_win is not None:
+            fw = self._full_tab._float_win
+            self._full_tab._float_win = None
+            fw.close()
         if self._log_file is not None:
             try:
                 self._log_file.close()
