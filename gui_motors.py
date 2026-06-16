@@ -1105,6 +1105,8 @@ class MainWindow(QMainWindow):
             self.tabs.addTab(tab, dev["name"])
             if tab.assets is not None:
                 self._viz_tabs.append(tab)
+        # 双击「整机」标签 = 弹出独立窗口
+        self.tabs.tabBarDoubleClicked.connect(self._on_tab_double_clicked)
         root.addWidget(self.tabs, stretch=1)
 
         # 日志：不在前端显示，只后台缓冲。勾选才把本次会话日志写文件（不覆盖历史）。
@@ -1356,6 +1358,11 @@ class MainWindow(QMainWindow):
                 await asyncio.sleep(POLL_S)
         except asyncio.CancelledError:
             pass
+
+    def _on_tab_double_clicked(self, index: int):
+        # 双击「整机」标签 → 弹出独立窗口
+        if self._full_tab is not None and self.tabs.widget(index) is self._full_tab:
+            self._full_tab.detach()
 
     def closeEvent(self, ev):
         if self._inflight and not self._inflight.done():

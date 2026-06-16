@@ -45,12 +45,19 @@ Item {
     property real flowPhase: 0
     NumberAnimation on flowPhase { from: 0; to: 1; duration: 1600; loops: Animation.Infinite; running: true }
     onFlowPhaseChanged: moveArrows()
-    // 挡光阈值（位移/转角幅度超过即视为「关」，可在此微调）
-    property real shutCloseMm: 6.0     // 快门 M6 滑动 ≥ 此值视为挡光 → 下游全灭
-    property real hartCloseDeg: 25.0   // 哈特曼门转角 ≥ 此值视为挡光 → 对应相机支灭
-    property bool blkShut: false        // 快门是否挡光（applyOffset 实时算）
-    property bool blkH1: false           // 左门 M7 是否挡光 → 蓝支
-    property bool blkH2: false           // 右门 M8 是否挡光 → 红支
+
+    // ===== 挡光配置（按实机调；HUD 实时显示各装置位移/转角，照着读数定阈值/方向）=====
+    // 判据：装置「相对中心位移(mm) × 方向 ≥ 阈值」→ 判为挡光。若开/关方向反了，把 *Dir 改成 -1。
+    //   快门 M6   → 挡「主光路」（快门后白光 + 蓝 + 红 全灭）
+    //   光栅切换 M5 升起 → 挡「蓝色通道」（光栅升起阻断蓝支）
+    //   哈特曼门 M7/M8 → 默认不挡（hartTarget=0；机理待定，后续再配）
+    property real shutBlockMm: 8.0;  property int shutBlockDir: 1    // 快门 M6 → 主光路
+    property real gratBlockMm: 8.0;  property int gratBlockDir: 1    // 光栅切换 M5 → 蓝支
+    property real hartBlockDeg: 1.0e9; property int hartTarget: 0    // 哈特曼门：0=不挡 1=主 2=蓝 3=红
+    // 运行态（computeBlocks 实时算）：主光路 / 蓝支 / 红支 是否被挡
+    property bool blkMain: false
+    property bool blkBlue: false
+    property bool blkRed: false
 
     // ---- 各装置电机状态（Python 每轮询推送）：0=断连/未知(灰) 1=正常(绿) 2=异常(红) ----
     property int stFA: 0; property int stFB: 0
@@ -319,9 +326,9 @@ Item {
 
     function setVis(list, v) { for (var i = 0; i < list.length; ++i) list[i].visible = v; }
     function updateGates() {
-        setVis(whitePostDash, !blkShut);
-        setVis(blueDash, !(blkShut || blkH1));
-        setVis(redDash,  !(blkShut || blkH2));
+        setVis(whitePostDash, !blkMain);              // 主光路被挡 → 快门后白光灭
+        setVis(blueDash, !(blkMain || blkBlue));      // 主光路挡 或 蓝支(光栅)挡
+        setVis(redDash,  !(blkMain || blkRed));       // 主光路挡 或 红支挡
         moveArrows();
     }
     function placeArrows(list, pts, arc, sMax, on) {
@@ -337,9 +344,9 @@ Item {
     }
     function moveArrows() {
         if (!whiteArc) return;   // build 之前 no-op
-        placeArrows(whiteArrows, whitePts, whiteArc, blkShut ? whiteShutArc : whiteArc.total, true);
-        placeArrows(blueArrows,  bluePts,  blueArc, blueArc.total, !(blkShut || blkH1));
-        placeArrows(redArrows,   redPts,   redArc,  redArc.total,  !(blkShut || blkH2));
+        placeArrows(whiteArrows, whitePts, whiteArc, blkMain ? whiteShutArc : whiteArc.total, true);
+        placeArrows(blueArrows,  bluePts,  blueArc, blueArc.total, !(blkMain || blkBlue));
+        placeArrows(redArrows,   redPts,   redArc,  redArc.total,  !(blkMain || blkRed));
     }
 
     function gather(n) {
@@ -478,15 +485,22 @@ Item {
         rotateGroupY(h1Nodes, h1Pivot, degH1);
         rotateGroupY(h2Nodes, h2Pivot, degH2);
 
-        // 挡光判定：位移/转角幅度超阈值 → 挡光，联动光路动画（下游灭、光子停）
-        blkShut = Math.abs(dShut * 1000) >= shutCloseMm;
-        blkH1 = Math.abs(degH1) >= hartCloseDeg;
-        blkH2 = Math.abs(degH2) >= hartCloseDeg;
+        // 挡光判定（按上方可调阈值/方向；用「相对中心位移 mm」判，与动画方向无关）
+        var mmShut = (posM6 - centerM6) * shutMm;   // 快门相对中心位移 mm
+        var mmLift = (posM5 - centerM5) * liftMm;    // 光栅切换(升降) 相对中心位移 mm
+        blkMain = (mmShut * shutBlockDir) >= shutBlockMm;   // 快门 M6 → 挡主光路（下游全灭）
+        blkBlue = (mmLift * gratBlockDir) >= gratBlockMm;   // 光栅切换 M5 升起 → 挡蓝支
+        blkRed = false;
+        // 哈特曼门：默认 hartBlockDeg 极大=不挡（机理待定，后续再配 hartTarget）
+        if (Math.max(Math.abs(degH1), Math.abs(degH2)) >= hartBlockDeg) {
+            if (hartTarget === 1) blkMain = true;
+            else if (hartTarget === 2) blkBlue = true;
+            else if (hartTarget === 3) blkRed = true;
+        }
         updateGates();
 
-        posHud.text = "M5升降 " + (dLift*1000).toFixed(1) + "mm · M6快门 " + (dShut*1000).toFixed(1)
-                    + "mm" + (blkShut ? "(挡光)" : "(通光)")
-                    + " · 门 " + degH1.toFixed(1) + "°" + (blkH1 ? "(挡)" : "") + "/"
-                    + degH2.toFixed(1) + "°" + (blkH2 ? "(挡)" : "");
+        posHud.text = "快门 " + mmShut.toFixed(1) + "mm→主光路" + (blkMain ? "[挡]" : "[通]")
+                    + " · 光栅 " + mmLift.toFixed(1) + "mm→蓝支" + (blkBlue ? "[挡]" : "[通]")
+                    + " · 门 " + degH1.toFixed(0) + "/" + degH2.toFixed(0) + "°";
     }
 }

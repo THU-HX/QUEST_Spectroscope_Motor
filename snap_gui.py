@@ -39,12 +39,16 @@ def main():
     # 注入假状态让截图有内容（调焦 1-4 给一个偏移量，截图能看出 3D 联动）
     demo = {1: 23.0, 2: 20.0, 3: 11.0, 4: 23.0, 5: m5, 6: m6, 7: m7, 8: m8}
     full = {mtr: fake_status(mtr, demo.get(mtr, 0.0)) for mtr in M.ALL_MOTORS}
-    for mtr, mc in w.controls.items():
-        mc.update_status(full[mtr])
-    if w._overview:
-        w._overview.update_status(full)
-    for vtab in w._viz_tabs:
-        vtab.push_positions(full)
+    def push():
+        # 反复推：整机页 viewer 是延后创建的（弹窗重建机制），首推可能丢，靠重复推喂上
+        for mtr, mc in w.controls.items():
+            mc.update_status(full[mtr])
+        if w._overview:
+            w._overview.update_status(full)
+        for vtab in w._viz_tabs:
+            vtab.push_positions(full)
+
+    push()
 
     def grab():
         img = w.grab()  # grab 整窗（含 QQuickWidget 合成内容）
@@ -52,6 +56,8 @@ def main():
         print(f"saved={ok} {out} {img.width()}x{img.height()}")
         app.quit()
 
+    # 模型加载好后再喂一遍状态，并留出补间时间，最后截图
+    QTimer.singleShot(max(800, delay - 3000), push)
     QTimer.singleShot(delay, grab)
     app.exec()
 
