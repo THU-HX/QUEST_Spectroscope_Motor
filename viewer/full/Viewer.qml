@@ -44,7 +44,7 @@ Item {
     // flowPhase 0→1 无限循环，驱动「光子」沿光束前进；电机挡光时下游段隐藏、光子停在挡光处。
     property real flowPhase: 0
     NumberAnimation on flowPhase { from: 0; to: 1; duration: 1600; loops: Animation.Infinite; running: true }
-    onFlowPhaseChanged: moveComets()
+    onFlowPhaseChanged: moveArrows()
     // 挡光阈值（位移/转角幅度超过即视为「关」，可在此微调）
     property real shutCloseMm: 6.0     // 快门 M6 滑动 ≥ 此值视为挡光 → 下游全灭
     property real hartCloseDeg: 25.0   // 哈特曼门转角 ≥ 此值视为挡光 → 对应相机支灭
@@ -203,161 +203,143 @@ Item {
         if (comp.status === Component.Loading) comp.statusChanged.connect(onReady); else onReady();
     }
 
-    // ===== 光路：分段绘制 + 光子流动 + 电机挡光联动 =====
-    // 每束 9 根细光线沿截面圆周排布；整段挂在一个 Node 下，便于按挡光整体开关。
-    function rayCyl(parent, ax, ay, az, bx, by, bz, color) {
-        var dx = bx-ax, dy = by-ay, dz = bz-az;
-        var len = Math.sqrt(dx*dx + dy*dy + dz*dz);
-        if (len < 1e-6) return;
-        // 内置 #Cylinder 高 100、径 100，沿局部 y → 缩放到 len 长、~4mm 细，再转向
-        var qml = "import QtQuick; import QtQuick3D; Model { source: \"#Cylinder\"; " +
-            "position: Qt.vector3d(" + (ax+bx)/2 + "," + (ay+by)/2 + "," + (az+bz)/2 + "); " +
-            "scale: Qt.vector3d(0.00006, " + (len/100) + ", 0.00006); " +
-            "materials: [ DefaultMaterial { lighting: DefaultMaterial.NoLighting; diffuseColor: \"" + color + "\" } ] }";
-        var m = Qt.createQmlObject(qml, parent);
-        var ux = dx/len, uy = dy/len, uz = dz/len;
+    // ===== 光路：虚线 + 流动箭头（沿折线；电机挡光时下游隐藏）=====
+    // 光路画成「一段段短圆柱组成的虚线」（静态）+ 沿线循环前进的「箭头锥」（动画，
+    // 指示传播方向）。比光球更像示意图。整段按挡光分组（whitePre/Post/blue/red）开关。
+
+    function dist3(a, b) { var dx=b[0]-a[0],dy=b[1]-a[1],dz=b[2]-a[2]; return Math.sqrt(dx*dx+dy*dy+dz*dz); }
+
+    // 把内置 #Cylinder/#Cone（局部 +y 轴）转到方向 (ux,uy,uz)
+    function orientToDir(node, ux, uy, uz) {
         var d = Math.max(-1, Math.min(1, uy));            // dot((0,1,0), dir)
         var angle = Math.acos(d);
-        var axx = uz, axy = 0, axz = -ux;                 // 轴 = y × dir
+        var axx = uz, axz = -ux;                          // 轴 = y × dir
         var an = Math.sqrt(axx*axx + axz*axz);
         if (an < 1e-6) { axx = 1; axz = 0; an = 1; }
         axx /= an; axz /= an;
         var s = Math.sin(angle/2);
-        m.rotation = Qt.quaternion(Math.cos(angle/2), axx*s, axy*s, axz*s);
+        node.rotation = Qt.quaternion(Math.cos(angle/2), axx*s, 0, axz*s);
     }
 
-    function drawBundle(parent, a, b, color) {
-        var dx = b[0]-a[0], dy = b[1]-a[1], dz = b[2]-a[2];
-        var len = Math.sqrt(dx*dx + dy*dy + dz*dz);
-        if (len < 1e-6) return;
-        var ux = dx/len, uy = dy/len, uz = dz/len;
-        // 垂直基底 p1/p2（光束截面平面）
-        var rx = Math.abs(uy) < 0.9 ? 0 : 1, ry = Math.abs(uy) < 0.9 ? 1 : 0;
-        var p1x = uy*0 - uz*ry, p1y = uz*rx - ux*0, p1z = ux*ry - uy*rx;   // dir × ref
-        var n1 = Math.sqrt(p1x*p1x + p1y*p1y + p1z*p1z); p1x/=n1; p1y/=n1; p1z/=n1;
-        var p2x = uy*p1z - uz*p1y, p2y = uz*p1x - ux*p1z, p2z = ux*p1y - uy*p1x;
-        var R = 0.026, N = 9;                              // 束半径 26mm，9 根
-        for (var k = 0; k < N; ++k) {
-            var ang = k * 2 * Math.PI / N;
-            var ox = (p1x*Math.cos(ang) + p2x*Math.sin(ang)) * R;
-            var oy = (p1y*Math.cos(ang) + p2y*Math.sin(ang)) * R;
-            var oz = (p1z*Math.cos(ang) + p2z*Math.sin(ang)) * R;
-            rayCyl(parent, a[0]+ox, a[1]+oy, a[2]+oz, b[0]+ox, b[1]+oy, b[2]+oz, color);
-        }
+    // 折线弧长表 {cum:[...], total}
+    function buildArc(pts) {
+        var cum = [0], total = 0;
+        for (var i = 0; i+1 < pts.length; ++i) { total += dist3(pts[i], pts[i+1]); cum.push(total); }
+        return { cum: cum, total: total };
     }
-
-    // 沿折线 pts 走 t∈[0,1]（按真实弧长）取一点
-    function dist3(a, b) { var dx=b[0]-a[0],dy=b[1]-a[1],dz=b[2]-a[2]; return Math.sqrt(dx*dx+dy*dy+dz*dz); }
-    function posAlong(pts, t) {
-        if (!pts || pts.length === 0) return Qt.vector3d(0,0,0);
-        if (pts.length === 1) return Qt.vector3d(pts[0][0],pts[0][1],pts[0][2]);
-        var segLen = [], total = 0, i;
-        for (i = 0; i+1 < pts.length; ++i) { var d = dist3(pts[i],pts[i+1]); segLen.push(d); total += d; }
-        if (total < 1e-9) return Qt.vector3d(pts[0][0],pts[0][1],pts[0][2]);
-        var target = t*total, acc = 0;
-        for (i = 0; i+1 < pts.length; ++i) {
-            if (acc + segLen[i] >= target || i+2 === pts.length) {
-                var f = segLen[i] < 1e-9 ? 0 : (target-acc)/segLen[i];
-                f = Math.max(0, Math.min(1, f));
-                return Qt.vector3d(pts[i][0]+(pts[i+1][0]-pts[i][0])*f,
-                                   pts[i][1]+(pts[i+1][1]-pts[i][1])*f,
-                                   pts[i][2]+(pts[i+1][2]-pts[i][2])*f);
+    // 弧长 s 处的 {p:[x,y,z], u:[ux,uy,uz]}（位置 + 单位切向）
+    function sampleArc(pts, arc, s) {
+        var total = arc.total, cum = arc.cum;
+        if (s < 0) s = 0; if (s > total) s = total;
+        for (var i = 0; i+1 < pts.length; ++i) {
+            if (s <= cum[i+1] || i+2 === pts.length) {
+                var segLen = cum[i+1] - cum[i];
+                var f = segLen < 1e-9 ? 0 : (s - cum[i]) / segLen;
+                var a = pts[i], b = pts[i+1];
+                var dx = b[0]-a[0], dy = b[1]-a[1], dz = b[2]-a[2];
+                var L = Math.sqrt(dx*dx+dy*dy+dz*dz) || 1;
+                return { p: [a[0]+dx*f, a[1]+dy*f, a[2]+dz*f], u: [dx/L, dy/L, dz/L] };
             }
-            acc += segLen[i];
         }
-        return Qt.vector3d(pts[pts.length-1][0],pts[pts.length-1][1],pts[pts.length-1][2]);
-    }
-    // 折线第 idx 个节点处的弧长占比（0..1）—— 挡光时光子停在此处
-    function fracAt(pts, idx) {
-        var segLen = [], total = 0, i;
-        for (i = 0; i+1 < pts.length; ++i) { var d = dist3(pts[i],pts[i+1]); segLen.push(d); total += d; }
-        if (total < 1e-9) return 0;
-        var acc = 0; for (i = 0; i < idx && i < segLen.length; ++i) acc += segLen[i];
-        return acc/total;
+        var last = pts[pts.length-1];
+        return { p: [last[0],last[1],last[2]], u: [1,0,0] };
     }
 
-    // 段集合 / 光子集合（buildLightPath 填充）
-    property var whitePre: []    // 入射→快门（含两条新增入射段）：常亮
-    property var whitePost: []   // 快门→分色镜：快门挡光时灭
-    property var blueSegs: []    // 蓝支：快门或左门挡光时灭
-    property var redSegs: []     // 红支：快门或右门挡光时灭
-    property var whiteComets: []; property var blueComets: []; property var redComets: []
-    property var whitePts: [];   property var bluePts: [];   property var redPts: []
-    property real whiteShutFrac: 1.0
-
-    function mkSeg(list, a, b, color) {
-        var node = Qt.createQmlObject('import QtQuick3D; Node {}', lightPath);
-        drawBundle(node, a, b, color);
-        list.push(node);
-    }
-    function mkComet(list, color) {
-        var s = Qt.createQmlObject('import QtQuick; import QtQuick3D; Model { source: "#Sphere"; ' +
-            'scale: Qt.vector3d(0.0008,0.0008,0.0008); ' +
+    // 一节虚线（短圆柱）：中心 c、方向 u、长 len、直径 dia
+    function mkDash(cx, cy, cz, ux, uy, uz, len, dia, color) {
+        var sxy = dia/100, sh = len/100;
+        var m = Qt.createQmlObject('import QtQuick; import QtQuick3D; Model { source: "#Cylinder"; ' +
+            'position: Qt.vector3d(' + cx + ',' + cy + ',' + cz + '); ' +
+            'scale: Qt.vector3d(' + sxy + ',' + sh + ',' + sxy + '); ' +
             'materials: [ DefaultMaterial { lighting: DefaultMaterial.NoLighting; diffuseColor: "' + color + '" } ] }', lightPath);
-        list.push({ node: s, off: list.length * 0.33 });
+        orientToDir(m, ux, uy, uz);
+        return m;
     }
+    // 在 pts 的弧长 [s0,s1) 段铺虚线，节点入 list
+    function layDashes(list, pts, arc, s0, s1, color) {
+        var step = 0.05, dashLen = 0.028, dia = 0.012;    // 周期50mm·段长28mm·直径12mm
+        for (var s = s0 + dashLen*0.5; s < s1; s += step) {
+            var smp = sampleArc(pts, arc, s);
+            list.push(mkDash(smp.p[0], smp.p[1], smp.p[2], smp.u[0], smp.u[1], smp.u[2], dashLen, dia, color));
+        }
+    }
+    // 箭头锥（#Cone 尖朝 +y）；位置/朝向每帧更新
+    function layArrows(list, color, n) {
+        for (var i = 0; i < n; ++i) {
+            var m = Qt.createQmlObject('import QtQuick; import QtQuick3D; Model { source: "#Cone"; ' +
+                'scale: Qt.vector3d(0.0003,0.0006,0.0003); ' +   // 底径30mm·高60mm
+                'materials: [ DefaultMaterial { lighting: DefaultMaterial.NoLighting; diffuseColor: "' + color + '" } ] }', lightPath);
+            list.push(m);
+        }
+    }
+
+    // 段集合（虚线节点）/ 箭头集合 / 折线 + 弧长（buildLightPath 填充）
+    property var whitePreDash: []   // 入射→快门：常亮
+    property var whitePostDash: []  // 快门→分色镜：快门挡光时灭
+    property var blueDash: []       // 蓝支：快门或左门挡光时灭
+    property var redDash: []        // 红支：快门或右门挡光时灭
+    property var whiteArrows: []; property var blueArrows: []; property var redArrows: []
+    property var whitePts: [];   property var bluePts: [];   property var redPts: []
+    property var whiteArc: null;  property var blueArc: null; property var redArc: null
+    property real whiteShutArc: 0   // 快门处弧长（挡光时箭头停这）
 
     function buildLightPath() {
-        // ===== waypoints（世界系，来自 analyze_full.py 装配中心；微调改坐标即可）=====
-        // 【新增·两段入射光 = 用户白色箭头所指两处】坐标依据左折叠镜(SYS02 平面镜 x≈-0.90)
-        //   给的初值，待现场核对：光从下方左侧进入 → 折到光轴高度 → 接入原白光起点。
-        var ENTRY0 = [-1.00, 0.03,  0.02];   // ① 入射口（下方左侧，偏向镜头侧便于看清，待核对）
-        var ENTRY1 = [-0.90, 0.15, -0.04];   // ② 折叠点（左折叠镜前下方，待核对）
-        var FOLD   = [-0.90, 0.21, -0.14];   // 左折叠镜 = 原白光起点
-        // 白光主段：折叠镜 → 快门 → 准直入口 → 分色镜
-        var SHUT = [-0.58, 0.21, -0.14], COLL = [-0.44, 0.20, -0.14], DICH = [-0.04, 0.17, -0.15];
-        // 蓝支：分色镜 → 蓝通道异形平面镜 → 光栅 → 蓝镜筒 → 波纹管 → 蓝CCD(调焦A)
+        // ===== 真实入射光路（用户指定的具体元件，坐标由模型按名实测）=====
+        //   入射 → 图纸自建-场镜-1 → 平面反射镜①(平面镜镜室-1) → 平面反射镜②(平面镜镜室-1_2)
+        //   → 快门 → 原蓝/红支。微调改坐标即可。
+        var ENTRY = [-0.723, 0.214, -0.45];   // 入射（场镜后方，沿光轴 +z 进入）
+        var FL    = [-0.723, 0.214, -0.27];   // 图纸自建-场镜-1（场镜，实测中心）
+        var M1    = [-0.721, 0.214,  0.059];  // 平面反射镜①（平面镜镜室-1，z>0 侧）
+        var M2    = [-0.891, 0.214, -0.143];  // 平面反射镜②（平面镜镜室-1_2，接原光路）
+        var SHUT  = [-0.58, 0.214, -0.14], COLL = [-0.44, 0.20, -0.14], DICH = [-0.04, 0.17, -0.15];
+        // 蓝支：分色镜 → 蓝通道异形平面镜 → 光栅 → 蓝镜筒 → 波纹管 → 蓝CCD
         var B = [DICH, [-0.17, 0.15, 0.02], [-0.04, 0.16, 0.06], [0.33, 0.17, 0.14], [0.63, 0.21, 0.21], [0.80, 0.12, 0.21]];
-        // 红支：分色镜 → 棱栅(升降台上) → 红镜筒 → 波纹管 → 红CCD(调焦B)
+        // 红支：分色镜 → 棱栅 → 红镜筒 → 波纹管 → 红CCD
         var Rr = [DICH, [0.31, 0.16, -0.16], [0.54, 0.15, -0.14], [0.69, 0.21, -0.14], [0.87, 0.12, -0.18]];
 
-        // 白光折线（含两条新段）+ 快门处弧长占比（挡光时光子停这）
-        whitePts = [ENTRY0, ENTRY1, FOLD, SHUT, COLL, DICH];
-        whiteShutFrac = fracAt(whitePts, 3);   // 索引 3 = SHUT
+        whitePts = [ENTRY, FL, M1, M2, SHUT, COLL, DICH];
         bluePts = B; redPts = Rr;
+        whiteArc = buildArc(whitePts); blueArc = buildArc(B); redArc = buildArc(Rr);
+        whiteShutArc = whiteArc.cum[4];   // 索引 4 = SHUT
 
-        // 入射→快门（前两段为新增）：常亮
-        mkSeg(whitePre, ENTRY0, ENTRY1, "#ffffff");   // 新段①（下方入射）
-        mkSeg(whitePre, ENTRY1, FOLD,   "#ffffff");   // 新段②（折向光轴）
-        mkSeg(whitePre, FOLD,   SHUT,   "#ffffff");
-        // 快门→分色镜：快门挡光时灭
-        mkSeg(whitePost, SHUT, COLL, "#ffffff");
-        mkSeg(whitePost, COLL, DICH, "#ffffff");
-        // 蓝/红支
-        var i;
-        for (i = 0; i+1 < B.length;  ++i) mkSeg(blueSegs, B[i],  B[i+1],  "#4da6ff");
-        for (i = 0; i+1 < Rr.length; ++i) mkSeg(redSegs,  Rr[i], Rr[i+1], "#ff5544");
+        // 虚线（静态）：白光分快门前/后两组；蓝/红各一组
+        layDashes(whitePreDash,  whitePts, whiteArc, 0, whiteShutArc, "#ffffff");
+        layDashes(whitePostDash, whitePts, whiteArc, whiteShutArc, whiteArc.total, "#ffffff");
+        layDashes(blueDash, bluePts, blueArc, 0, blueArc.total, "#4da6ff");
+        layDashes(redDash,  redPts,  redArc,  0, redArc.total,  "#ff5544");
 
-        // 光子（流动高亮）：每支 3 颗，沿折线循环前进，相位错开
-        for (i = 0; i < 3; ++i) mkComet(whiteComets, "#ffffff");
-        for (i = 0; i < 3; ++i) mkComet(blueComets,  "#bfe0ff");
-        for (i = 0; i < 3; ++i) mkComet(redComets,   "#ffc0b0");
+        // 箭头（流动）：每支 4 个，沿线循环前进指示方向
+        layArrows(whiteArrows, "#ffffff", 4);
+        layArrows(blueArrows,  "#bfe0ff", 4);
+        layArrows(redArrows,   "#ffc0b0", 4);
 
         updateGates();
-        moveComets();
+        moveArrows();
     }
 
     function setVis(list, v) { for (var i = 0; i < list.length; ++i) list[i].visible = v; }
     function updateGates() {
-        setVis(whitePost, !blkShut);
-        setVis(blueSegs, !(blkShut || blkH1));
-        setVis(redSegs,  !(blkShut || blkH2));
-        moveComets();
+        setVis(whitePostDash, !blkShut);
+        setVis(blueDash, !(blkShut || blkH1));
+        setVis(redDash,  !(blkShut || blkH2));
+        moveArrows();
     }
-    function placeComets(list, pts, maxFrac, on) {
+    function placeArrows(list, pts, arc, sMax, on) {
         for (var i = 0; i < list.length; ++i) {
-            var c = list[i];
-            if (!on) { c.node.visible = false; continue; }
-            c.node.visible = root.lightOn;
-            var t = (root.flowPhase + c.off) % 1.0;
-            c.node.position = posAlong(pts, t * maxFrac);
+            var nd = list[i];
+            if (!on) { nd.visible = false; continue; }
+            nd.visible = root.lightOn;
+            var t = (root.flowPhase + i / list.length) % 1.0;   // 均匀错相 → 一串箭头在流
+            var smp = sampleArc(pts, arc, t * sMax);
+            nd.position = Qt.vector3d(smp.p[0], smp.p[1], smp.p[2]);
+            orientToDir(nd, smp.u[0], smp.u[1], smp.u[2]);
         }
     }
-    function moveComets() {
-        if (!whitePts || whitePts.length === 0) return;   // build 之前 no-op
-        placeComets(whiteComets, whitePts, blkShut ? whiteShutFrac : 1.0, true);
-        placeComets(blueComets,  bluePts,  1.0, !(blkShut || blkH1));
-        placeComets(redComets,   redPts,   1.0, !(blkShut || blkH2));
+    function moveArrows() {
+        if (!whiteArc) return;   // build 之前 no-op
+        placeArrows(whiteArrows, whitePts, whiteArc, blkShut ? whiteShutArc : whiteArc.total, true);
+        placeArrows(blueArrows,  bluePts,  blueArc, blueArc.total, !(blkShut || blkH1));
+        placeArrows(redArrows,   redPts,   redArc,  redArc.total,  !(blkShut || blkH2));
     }
 
     function gather(n) {
