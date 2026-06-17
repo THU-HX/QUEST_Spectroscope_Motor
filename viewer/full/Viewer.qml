@@ -46,18 +46,20 @@ Item {
     NumberAnimation on flowPhase { from: 0; to: 1; duration: 1600; loops: Animation.Infinite; running: true }
     onFlowPhaseChanged: moveArrows()
 
-    // ===== 挡光配置（按实机调；HUD 实时显示各装置位移/转角，照着读数定阈值/方向）=====
+    // ===== 挡光 / 亮度配置（按实机调；HUD 实时显示各装置位移/转角，照着读数定阈值/方向）=====
     //   快门 M6：0mm = 关（主光路挡死，光透不过）；移动到「位移×方向 ≥ shutOpenMm」才开(通光)。
     //            → 主光路被挡时快门后白光 + 蓝 + 红 全灭。开关方向反了把 shutOpenDir 改 -1。
-    //   光栅切换 M5 升起（位移×方向 ≥ 阈值）→ 挡「蓝色通道」。
-    //   哈特曼门 M7/M8 → 默认不挡（hartTarget=0；机理待定，后续再配）。
+    //   光栅切换 M5：默认(下/0mm)只有红支；升到位「位移×方向 ≥ gratOpenMm」蓝支才通。方向反了改 gratOpenDir。
+    //   哈特曼门 M7/M8：常开=全亮，不改光路；转角越大越关，按综合开度降低蓝/红支「亮度(透明度)」。
+    //            hartCloseDeg = 单门全关角度（转到此角度该门贡献亮度→0）。
     property real shutOpenMm: 8.0;   property int shutOpenDir: 1     // 快门 M6：开启所需位移 mm（0mm=关）
-    property real gratBlockMm: 8.0;  property int gratBlockDir: 1    // 光栅切换 M5 升起 → 挡蓝支
-    property real hartBlockDeg: 1.0e9; property int hartTarget: 0    // 哈特曼门：0=不挡 1=主 2=蓝 3=红
-    // 运行态（computeBlocks 实时算）：主光路 / 蓝支 / 红支 是否被挡
+    property real gratOpenMm: 8.0;   property int gratOpenDir: 1     // 光栅 M5：蓝支开启所需升起位移 mm（0mm=只红）
+    property real hartCloseDeg: 90.0                                 // 哈特曼门：单门全关角度（亮度渐变用）
+    // 运行态（applyOffset 实时算）：主光路 / 蓝支 / 红支 是否被挡 + 蓝红支亮度(0..1)
     property bool blkMain: false
     property bool blkBlue: false
     property bool blkRed: false
+    property real beamBright: 1.0
 
     // ---- 各装置电机状态（Python 每轮询推送）：0=断连/未知(灰) 1=正常(绿) 2=异常(红) ----
     property int stFA: 0; property int stFB: 0
@@ -331,6 +333,17 @@ Item {
         setVis(redDash,  !(blkMain || blkRed));       // 主光路挡 或 红支挡
         moveArrows();
     }
+    // 哈特曼门开度 → 蓝/红支亮度（材质透明度）：1=全亮，0.5=半亮…
+    function setOpacity(list, op) {
+        for (var i = 0; i < list.length; ++i) {
+            var n = list[i];
+            if (n && n.materials && n.materials.length > 0) n.materials[0].opacity = op;
+        }
+    }
+    function applyBeamBrightness() {
+        setOpacity(blueDash, beamBright);  setOpacity(redDash, beamBright);
+        setOpacity(blueArrows, beamBright); setOpacity(redArrows, beamBright);
+    }
     function placeArrows(list, pts, arc, sMax, on) {
         for (var i = 0; i < list.length; ++i) {
             var nd = list[i];
@@ -491,18 +504,19 @@ Item {
         // 快门：0mm=关，位移×方向 ≥ shutOpenMm 才「开」；没开到位 → 主光路挡死
         var shutOpen = (mmShut * shutOpenDir) >= shutOpenMm;
         blkMain = !shutOpen;                                 // 快门 M6 → 主光路（下游全灭）
-        blkBlue = (mmLift * gratBlockDir) >= gratBlockMm;   // 光栅切换 M5 升起 → 挡蓝支
+        // 光栅切换 M5：默认(下)只有红支；升到位(位移×方向≥阈值)蓝支才通
+        var blueOpen = (mmLift * gratOpenDir) >= gratOpenMm;
+        blkBlue = !blueOpen;
         blkRed = false;
-        // 哈特曼门：默认 hartBlockDeg 极大=不挡（机理待定，后续再配 hartTarget）
-        if (Math.max(Math.abs(degH1), Math.abs(degH2)) >= hartBlockDeg) {
-            if (hartTarget === 1) blkMain = true;
-            else if (hartTarget === 2) blkBlue = true;
-            else if (hartTarget === 3) blkRed = true;
-        }
+        // 哈特曼门：常开=全亮；转角越大越关，按两门综合开度降低蓝/红支亮度（不改光路，只改亮度）
+        var f1 = Math.max(0, Math.min(1, 1 - Math.abs(degH1) / hartCloseDeg));
+        var f2 = Math.max(0, Math.min(1, 1 - Math.abs(degH2) / hartCloseDeg));
+        beamBright = (f1 + f2) / 2;
         updateGates();
+        applyBeamBrightness();
 
         posHud.text = "快门 " + mmShut.toFixed(1) + "mm " + (blkMain ? "[关·挡主光路]" : "[开·通光]")
-                    + " · 光栅 " + mmLift.toFixed(1) + "mm→蓝支" + (blkBlue ? "[挡]" : "[通]")
-                    + " · 门 " + degH1.toFixed(0) + "/" + degH2.toFixed(0) + "°";
+                    + " · 光栅 " + mmLift.toFixed(1) + "mm→蓝支" + (blkBlue ? "[挡·只红]" : "[通]")
+                    + " · 门 " + degH1.toFixed(0) + "/" + degH2.toFixed(0) + "° 亮度" + (beamBright*100).toFixed(0) + "%";
     }
 }
