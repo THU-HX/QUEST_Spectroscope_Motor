@@ -47,12 +47,12 @@ Item {
     onFlowPhaseChanged: moveArrows()
 
     // ===== 挡光配置（按实机调；HUD 实时显示各装置位移/转角，照着读数定阈值/方向）=====
-    // 判据：装置「相对中心位移(mm) × 方向 ≥ 阈值」→ 判为挡光。若开/关方向反了，把 *Dir 改成 -1。
-    //   快门 M6   → 挡「主光路」（快门后白光 + 蓝 + 红 全灭）
-    //   光栅切换 M5 升起 → 挡「蓝色通道」（光栅升起阻断蓝支）
-    //   哈特曼门 M7/M8 → 默认不挡（hartTarget=0；机理待定，后续再配）
-    property real shutBlockMm: 8.0;  property int shutBlockDir: 1    // 快门 M6 → 主光路
-    property real gratBlockMm: 8.0;  property int gratBlockDir: 1    // 光栅切换 M5 → 蓝支
+    //   快门 M6：0mm = 关（主光路挡死，光透不过）；移动到「位移×方向 ≥ shutOpenMm」才开(通光)。
+    //            → 主光路被挡时快门后白光 + 蓝 + 红 全灭。开关方向反了把 shutOpenDir 改 -1。
+    //   光栅切换 M5 升起（位移×方向 ≥ 阈值）→ 挡「蓝色通道」。
+    //   哈特曼门 M7/M8 → 默认不挡（hartTarget=0；机理待定，后续再配）。
+    property real shutOpenMm: 8.0;   property int shutOpenDir: 1     // 快门 M6：开启所需位移 mm（0mm=关）
+    property real gratBlockMm: 8.0;  property int gratBlockDir: 1    // 光栅切换 M5 升起 → 挡蓝支
     property real hartBlockDeg: 1.0e9; property int hartTarget: 0    // 哈特曼门：0=不挡 1=主 2=蓝 3=红
     // 运行态（computeBlocks 实时算）：主光路 / 蓝支 / 红支 是否被挡
     property bool blkMain: false
@@ -488,7 +488,9 @@ Item {
         // 挡光判定（按上方可调阈值/方向；用「相对中心位移 mm」判，与动画方向无关）
         var mmShut = (posM6 - centerM6) * shutMm;   // 快门相对中心位移 mm
         var mmLift = (posM5 - centerM5) * liftMm;    // 光栅切换(升降) 相对中心位移 mm
-        blkMain = (mmShut * shutBlockDir) >= shutBlockMm;   // 快门 M6 → 挡主光路（下游全灭）
+        // 快门：0mm=关，位移×方向 ≥ shutOpenMm 才「开」；没开到位 → 主光路挡死
+        var shutOpen = (mmShut * shutOpenDir) >= shutOpenMm;
+        blkMain = !shutOpen;                                 // 快门 M6 → 主光路（下游全灭）
         blkBlue = (mmLift * gratBlockDir) >= gratBlockMm;   // 光栅切换 M5 升起 → 挡蓝支
         blkRed = false;
         // 哈特曼门：默认 hartBlockDeg 极大=不挡（机理待定，后续再配 hartTarget）
@@ -499,7 +501,7 @@ Item {
         }
         updateGates();
 
-        posHud.text = "快门 " + mmShut.toFixed(1) + "mm→主光路" + (blkMain ? "[挡]" : "[通]")
+        posHud.text = "快门 " + mmShut.toFixed(1) + "mm " + (blkMain ? "[关·挡主光路]" : "[开·通光]")
                     + " · 光栅 " + mmLift.toFixed(1) + "mm→蓝支" + (blkBlue ? "[挡]" : "[通]")
                     + " · 门 " + degH1.toFixed(0) + "/" + degH2.toFixed(0) + "°";
     }
