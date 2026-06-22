@@ -1038,6 +1038,39 @@ class FullTab(QWidget):
             self.viewer.set_motor_center(motor, self.ctrl.cfg["motors"][str(motor)]["center"])
 
 
+class _CenterMsgBox(QMessageBox):
+    """警告框：相对父窗口居中并钳制在屏幕可用区内。
+    WM 默认会把对话框丢到角落/顶部。做法：show 之前按 sizeHint 先居中一次
+    （消除从角落跳到中心的闪烁），show 之后再 singleShot 校正一次
+    （Windows 上原生边框尺寸要等窗口实现后才确定）。"""
+    def center_on_parent(self):
+        try:
+            par = self.parentWidget()
+            if par is None:
+                return
+            win = par.window()
+            scr = win.screen() or QApplication.primaryScreen()
+            avail = scr.availableGeometry() if scr else win.frameGeometry()
+            # 父窗口最小化时 frameGeometry 会跑到 (-32000,-32000)，改为按屏幕居中
+            center = avail.center() if win.isMinimized() else win.frameGeometry().center()
+            fg = self.frameGeometry()
+            fg.moveCenter(center)
+            # 钳制进屏幕可用区，避免越界把文字/按钮挤出屏幕（先收右下、再保左上可见）
+            if scr:
+                if fg.right() > avail.right():     fg.moveRight(avail.right())
+                if fg.bottom() > avail.bottom():   fg.moveBottom(avail.bottom())
+                if fg.left() < avail.left():       fg.moveLeft(avail.left())
+                if fg.top() < avail.top():         fg.moveTop(avail.top())
+            self.move(fg.topLeft())
+        except RuntimeError:
+            return   # 延后回调触发时底层 C++ 对象可能已析构
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        # show 后原生边框尺寸才确定，延后校正一次；仍可见才动，避免对已关闭的框操作
+        QTimer.singleShot(0, lambda: self.isVisible() and self.center_on_parent())
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -1262,22 +1295,21 @@ class MainWindow(QMainWindow):
         await self.run_seq("一键去使能所有电机", items)
 
     async def warn(self, title: str, text: str):
-        box = QMessageBox(self)
+        box = _CenterMsgBox(self)                  # 居中+钳屏逻辑见类定义
+        box.setAttribute(Qt.WA_DeleteOnClose)      # 关闭即销毁，避免每次报警累积孤儿对象
         box.setIcon(QMessageBox.Critical)
         box.setWindowTitle(title)
         box.setText(text)
         box.setStandardButtons(QMessageBox.Ok)
         box.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        # 加宽并撑开正文，避免多行文字被右侧裁掉
-        box.setStyleSheet("QLabel{min-width:420px;font-size:11pt;}")
-        fut: asyncio.Future = asyncio.get_event_loop().create_future()
+        # 只给正文标签设最小宽度（#qt_msgbox_label，Qt4→Qt6 稳定的内部名）。注意不能用裸
+        # QLabel 选择器，否则会连图标标签(qt_msgboxex_icon_label)一起撑宽，正文被推到右边留大片空白。
+        box.setStyleSheet("QLabel#qt_msgbox_label{min-width:340px;}")
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
         box.finished.connect(lambda _: fut.done() or fut.set_result(None))
+        box.adjustSize()           # QMessageBox 尺寸是懒计算的，先撑出最终大小
+        box.center_on_parent()     # 显示前先居中，消除从角落跳到中心的闪烁
         box.open()
-        # open() 是非模态，Qt 不会自动居中——等它算出尺寸后手动居中到主窗口
-        box.adjustSize()
-        fr = box.frameGeometry()
-        fr.moveCenter(self.frameGeometry().center())
-        box.move(fr.topLeft())
         await fut
 
     # ---------------- 连接/状态 ----------------
