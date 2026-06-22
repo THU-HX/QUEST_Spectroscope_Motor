@@ -1267,9 +1267,17 @@ class MainWindow(QMainWindow):
         box.setWindowTitle(title)
         box.setText(text)
         box.setStandardButtons(QMessageBox.Ok)
+        box.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        # 加宽并撑开正文，避免多行文字被右侧裁掉
+        box.setStyleSheet("QLabel{min-width:420px;font-size:11pt;}")
         fut: asyncio.Future = asyncio.get_event_loop().create_future()
         box.finished.connect(lambda _: fut.done() or fut.set_result(None))
         box.open()
+        # open() 是非模态，Qt 不会自动居中——等它算出尺寸后手动居中到主窗口
+        box.adjustSize()
+        fr = box.frameGeometry()
+        fr.moveCenter(self.frameGeometry().center())
+        box.move(fr.topLeft())
         await fut
 
     # ---------------- 连接/状态 ----------------
