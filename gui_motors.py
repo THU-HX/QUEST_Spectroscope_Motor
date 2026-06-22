@@ -43,11 +43,11 @@ if _QML_DIR.is_dir():
     os.environ.setdefault("QML2_IMPORT_PATH", str(_QML_DIR))
     os.environ.setdefault("QML_IMPORT_PATH", str(_QML_DIR))
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QEvent
 from PySide6.QtGui import QDoubleValidator, QFont, QColor
 from PySide6.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QLineEdit, QVBoxLayout,
-    QHBoxLayout, QGridLayout, QGroupBox, QCheckBox, QMessageBox,
+    QHBoxLayout, QGridLayout, QGroupBox, QCheckBox, QMessageBox, QFrame,
     QSplitter, QDoubleSpinBox, QComboBox, QMainWindow, QTabWidget,
     QScrollArea, QSizePolicy, QTableWidget, QTableWidgetItem, QHeaderView,
     QAbstractItemView,
@@ -1038,37 +1038,109 @@ class FullTab(QWidget):
             self.viewer.set_motor_center(motor, self.ctrl.cfg["motors"][str(motor)]["center"])
 
 
-class _CenterMsgBox(QMessageBox):
-    """警告框：相对父窗口居中并钳制在屏幕可用区内。
-    WM 默认会把对话框丢到角落/顶部。做法：show 之前按 sizeHint 先居中一次
-    （消除从角落跳到中心的闪烁），show 之后再 singleShot 校正一次
-    （Windows 上原生边框尺寸要等窗口实现后才确定）。"""
-    def center_on_parent(self):
-        try:
-            par = self.parentWidget()
-            if par is None:
-                return
-            win = par.window()
-            scr = win.screen() or QApplication.primaryScreen()
-            avail = scr.availableGeometry() if scr else win.frameGeometry()
-            # 父窗口最小化时 frameGeometry 会跑到 (-32000,-32000)，改为按屏幕居中
-            center = avail.center() if win.isMinimized() else win.frameGeometry().center()
-            fg = self.frameGeometry()
-            fg.moveCenter(center)
-            # 钳制进屏幕可用区，避免越界把文字/按钮挤出屏幕（先收右下、再保左上可见）
-            if scr:
-                if fg.right() > avail.right():     fg.moveRight(avail.right())
-                if fg.bottom() > avail.bottom():   fg.moveBottom(avail.bottom())
-                if fg.left() < avail.left():       fg.moveLeft(avail.left())
-                if fg.top() < avail.top():         fg.moveTop(avail.top())
-            self.move(fg.topLeft())
-        except RuntimeError:
-            return   # 延后回调触发时底层 C++ 对象可能已析构
+class _WarnOverlay(QWidget):
+    """主窗口内居中的模态警告浮层。
+    用「窗口内子控件」而非顶层 QMessageBox：Wayland(GNOME/mutter) 下客户端无法
+    自己摆放顶层窗口，move() 被合成器忽略，弹窗永远在左上角。子控件的几何完全由
+    程序掌控，必定居中，且能用 window.grab() 截图验证真实位置。覆盖全窗 + 拦截
+    鼠标键盘即实现模态遮罩。"""
+    def __init__(self, parent: QWidget):
+        super().__init__(parent)
+        self.setObjectName("warnOverlay")
+        self.setFocusPolicy(Qt.StrongFocus)
+        self._fut: "asyncio.Future | None" = None
 
-    def showEvent(self, ev):
-        super().showEvent(ev)
-        # show 后原生边框尺寸才确定，延后校正一次；仍可见才动，避免对已关闭的框操作
-        QTimer.singleShot(0, lambda: self.isVisible() and self.center_on_parent())
+        self._card = QFrame(self)
+        self._card.setObjectName("warnCard")
+        cl = QHBoxLayout(self._card)
+        cl.setContentsMargins(26, 24, 26, 22)
+        cl.setSpacing(18)
+
+        self._icon = QLabel("!", self._card)
+        self._icon.setObjectName("warnIcon")
+        self._icon.setFixedSize(54, 54)
+        self._icon.setAlignment(Qt.AlignCenter)
+
+        right = QVBoxLayout()
+        right.setSpacing(14)
+        self._title = QLabel(self._card); self._title.setObjectName("warnTitle")
+        self._text = QLabel(self._card); self._text.setObjectName("warnText")
+        self._text.setWordWrap(True)
+        self._text.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self._btn = QPushButton("确定", self._card); self._btn.setObjectName("warnOk")
+        self._btn.setMinimumHeight(34); self._btn.setMinimumWidth(108)
+        self._btn.setDefault(True); self._btn.setAutoDefault(True)
+        self._btn.clicked.connect(self._accept)
+        brow = QHBoxLayout(); brow.addStretch(1); brow.addWidget(self._btn)
+        right.addWidget(self._title)
+        right.addWidget(self._text)
+        right.addLayout(brow)
+        cl.addWidget(self._icon, 0, Qt.AlignTop)
+        cl.addLayout(right, 1)
+
+        self.setStyleSheet("""
+            #warnOverlay { background: rgba(16,19,26,0.45); }
+            #warnCard { background:#ffffff; border-radius:16px; }
+            #warnIcon { background:#e23b3b; color:#ffffff; border-radius:27px;
+                        font-size:30pt; font-weight:800; }
+            #warnTitle { font-size:15pt; font-weight:700; color:#202635; }
+            #warnText  { font-size:11.5pt; color:#39414f; }
+            #warnOk    { background:#e23b3b; color:#ffffff; border:none; border-radius:9px;
+                         font-size:11pt; font-weight:600; padding:6px 20px; }
+            #warnOk:hover  { background:#cf3030; }
+            #warnOk:pressed{ background:#b82a2a; }
+        """)
+        self.hide()
+
+    def show_warn(self, title: str, text: str) -> "asyncio.Future":
+        # 同一时刻只保留一个浮层：新报警取代旧的，解除旧 await（调用方此时只是返回）
+        if self._fut is not None and not self._fut.done():
+            self._fut.set_result(None)
+        self._title.setText(title)
+        self._text.setText(text)
+        self._card.setMaximumWidth(560)
+        self.setGeometry(self.parentWidget().rect())
+        self._relayout()
+        self.show(); self.raise_()
+        self._btn.setFocus()
+        self.parentWidget().installEventFilter(self)
+        self._fut = asyncio.get_running_loop().create_future()
+        return self._fut
+
+    def _relayout(self):
+        # 卡片按内容自适应，封顶 560，再相对遮罩居中
+        self._card.setFixedWidth(min(self._card.sizeHint().width(), 560))
+        self._card.adjustSize()
+        r = self._card.frameGeometry()
+        r.moveCenter(self.rect().center())
+        self._card.move(r.topLeft())
+
+    def resizeEvent(self, _e):
+        self._relayout()
+
+    def eventFilter(self, obj, ev):
+        if obj is self.parentWidget() and ev.type() == QEvent.Resize and self.isVisible():
+            self.setGeometry(self.parentWidget().rect())
+        return False
+
+    def _accept(self):
+        p = self.parentWidget()
+        if p is not None:
+            p.removeEventFilter(self)
+        self.hide()
+        if self._fut is not None and not self._fut.done():
+            self._fut.set_result(None)
+
+    # 模态：遮罩吞掉鼠标点击不穿透；Esc/Enter 关闭
+    def mousePressEvent(self, _e):
+        pass
+    def mouseReleaseEvent(self, _e):
+        pass
+    def keyPressEvent(self, e):
+        if e.key() in (Qt.Key_Escape, Qt.Key_Return, Qt.Key_Enter):
+            self._accept()
+        else:
+            super().keyPressEvent(e)
 
 
 class MainWindow(QMainWindow):
@@ -1084,6 +1156,7 @@ class MainWindow(QMainWindow):
         self._inflight: asyncio.Task | None = None
         self._viz_tabs: list[DeviceTab] = []        # 带 3D 的装置页（升降/快门/调焦）
         self._overview: OverviewTab | None = None
+        self._warn_overlay: "_WarnOverlay | None" = None   # 窗口内居中警告浮层
         # 日志：后台缓冲，勾选才落盘
         self._log_buffer: list[str] = []
         self._log_file = None
@@ -1295,22 +1368,11 @@ class MainWindow(QMainWindow):
         await self.run_seq("一键去使能所有电机", items)
 
     async def warn(self, title: str, text: str):
-        box = _CenterMsgBox(self)                  # 居中+钳屏逻辑见类定义
-        box.setAttribute(Qt.WA_DeleteOnClose)      # 关闭即销毁，避免每次报警累积孤儿对象
-        box.setIcon(QMessageBox.Critical)
-        box.setWindowTitle(title)
-        box.setText(text)
-        box.setStandardButtons(QMessageBox.Ok)
-        box.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        # 只给正文标签设最小宽度（#qt_msgbox_label，Qt4→Qt6 稳定的内部名）。注意不能用裸
-        # QLabel 选择器，否则会连图标标签(qt_msgboxex_icon_label)一起撑宽，正文被推到右边留大片空白。
-        box.setStyleSheet("QLabel#qt_msgbox_label{min-width:340px;}")
-        fut: asyncio.Future = asyncio.get_running_loop().create_future()
-        box.finished.connect(lambda _: fut.done() or fut.set_result(None))
-        box.adjustSize()           # QMessageBox 尺寸是懒计算的，先撑出最终大小
-        box.center_on_parent()     # 显示前先居中，消除从角落跳到中心的闪烁
-        box.open()
-        await fut
+        # 用窗口内浮层（_WarnOverlay）而非顶层 QMessageBox：Wayland 下顶层窗口
+        # 无法客户端自定位（move() 被合成器忽略，永远卡左上角），浮层必定居中。
+        if self._warn_overlay is None:
+            self._warn_overlay = _WarnOverlay(self)
+        await self._warn_overlay.show_warn(title, text)
 
     # ---------------- 连接/状态 ----------------
     def _set_connected(self, ok: bool):
