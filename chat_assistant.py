@@ -9,6 +9,7 @@ import asyncio
 import json
 import os
 import ssl
+import threading
 import urllib.request
 from pathlib import Path
 
@@ -168,6 +169,23 @@ def _save_cfg(cfg: dict) -> None:
         pass
 
 
+def _await_in_daemon(fn, *args):
+    """在守护线程里跑阻塞函数 fn，返回可 await 的 future。
+    守护线程：即使卡在网络读上，进程退出也不会被 join 阻塞（修复关窗后卡死）。"""
+    loop = asyncio.get_running_loop()
+    fut = loop.create_future()
+
+    def worker():
+        try:
+            r = fn(*args)
+            loop.call_soon_threadsafe(lambda: fut.done() or fut.set_result(r))
+        except Exception as e:                   # noqa: BLE001
+            loop.call_soon_threadsafe(lambda: fut.done() or fut.set_exception(e))
+
+    threading.Thread(target=worker, daemon=True).start()
+    return fut
+
+
 def _list_models_blocking(url: str, key: str, timeout: float = 15.0):
     req = urllib.request.Request(
         url.rstrip("/") + "/v1/models",
@@ -210,36 +228,32 @@ async def stream_chat(url, key, model, messages, on_delta, tools=None, timeout: 
     if tools:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
-    fut = loop.run_in_executor(None, _stream_blocking, url, key, payload, q, loop, timeout)
+    # 守护线程读 SSE：卡在慢响应上也不会阻塞进程退出 / Ctrl+C
+    threading.Thread(target=_stream_blocking,
+                     args=(url, key, payload, q, loop, timeout), daemon=True).start()
     full = []
     tacc: dict = {}                                  # index -> {"name","args"}（工具调用分片累积）
-    try:
-        while True:
-            kind, val = await q.get()
-            if kind == "done":
-                break
-            if kind == "error":
-                raise val
-            try:
-                delta = json.loads(val)["choices"][0].get("delta", {})
-            except (json.JSONDecodeError, KeyError, IndexError, TypeError):
-                continue
-            piece = delta.get("content")
-            if piece:
-                full.append(piece)
-                on_delta(piece)
-            for t in (delta.get("tool_calls") or []):
-                slot = tacc.setdefault(t.get("index", 0), {"name": "", "args": ""})
-                fn = t.get("function") or {}
-                if fn.get("name"):
-                    slot["name"] = fn["name"]
-                if fn.get("arguments"):
-                    slot["args"] += fn["arguments"]
-    finally:
+    while True:
+        kind, val = await q.get()                    # 被 cancel 时在此抛 CancelledError，线程留守自然结束
+        if kind == "done":
+            break
+        if kind == "error":
+            raise val
         try:
-            await fut
-        except Exception:
-            pass
+            delta = json.loads(val)["choices"][0].get("delta", {})
+        except (json.JSONDecodeError, KeyError, IndexError, TypeError):
+            continue
+        piece = delta.get("content")
+        if piece:
+            full.append(piece)
+            on_delta(piece)
+        for t in (delta.get("tool_calls") or []):
+            slot = tacc.setdefault(t.get("index", 0), {"name": "", "args": ""})
+            fn = t.get("function") or {}
+            if fn.get("name"):
+                slot["name"] = fn["name"]
+            if fn.get("arguments"):
+                slot["args"] += fn["arguments"]
     tool_calls = []
     for i in sorted(tacc):
         s = tacc[i]
@@ -343,7 +357,7 @@ class ChatAssistant(QWidget):
         self.btn_send = QPushButton("发送")
         self.btn_send.setProperty("kind", "primary")
         self.btn_send.setMinimumHeight(32)
-        self.btn_send.clicked.connect(self._send)
+        self.btn_send.clicked.connect(self._on_send_btn)   # 忙时点=停止
         self.btn_clear = QPushButton("清空")
         self.btn_clear.setMinimumHeight(32)
         self.btn_clear.clicked.connect(self._clear)
@@ -375,10 +389,9 @@ class ChatAssistant(QWidget):
             _save_cfg(self.cfg)
 
     async def _load_models(self):
-        loop = asyncio.get_running_loop()
         try:
-            ids = await loop.run_in_executor(
-                None, _list_models_blocking, self.cfg["url"], self.cfg["key"])
+            ids = await _await_in_daemon(
+                _list_models_blocking, self.cfg["url"], self.cfg["key"])
         except Exception:
             return                                # 拉不到就保留兜底列表
         if not ids:
@@ -475,6 +488,10 @@ class ChatAssistant(QWidget):
             content, tool_calls = await stream_chat(
                 self.cfg["url"], self.cfg["key"], self.cfg["model"],
                 messages, self._append_text, tools=TOOLS)
+        except asyncio.CancelledError:           # 用户点「停止」或关窗
+            self._append_html("<br><span style='color:#8a93a3;'>（已停止）</span>")
+            self._set_busy(False)
+            return
         except Exception as e:
             err = e
         # 执行模型请求的设备操作（走与手动按钮同一套安全闸）
@@ -567,9 +584,19 @@ class ChatAssistant(QWidget):
             out.append("↳ 默认移动量在 assistant_ops.json 改")
         return out
 
+    def _on_send_btn(self):
+        if self._task and not self._task.done():
+            self._task.cancel()                  # 忙时点=停止本次请求
+        else:
+            self._send()
+
+    def _stop(self):
+        if self._task and not self._task.done():
+            self._task.cancel()
+
     def _set_busy(self, busy: bool):
-        self.btn_send.setEnabled(not busy)
-        self.btn_send.setText("思考中…" if busy else "发送")
+        self.btn_send.setEnabled(True)           # 忙时仍可点（作「停止」）
+        self.btn_send.setText("停止" if busy else "发送")
         self.input.setEnabled(not busy)
 
 

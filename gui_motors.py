@@ -16,7 +16,9 @@
 import asyncio
 import datetime
 import os
+import signal
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -1538,6 +1540,8 @@ class MainWindow(QMainWindow):
             self._inflight.cancel()
         if self._poll_task and not self._poll_task.done():
             self._poll_task.cancel()
+        if self.chat._task and not self.chat._task.done():
+            self.chat._task.cancel()             # 关窗时取消在飞的助手请求
         # 整机预览若弹成了独立窗口，随主窗一起关掉（置空避免退出时还去页内重建）
         if self._full_tab and self._full_tab._float_win is not None:
             fw = self._full_tab._float_win
@@ -1552,7 +1556,24 @@ class MainWindow(QMainWindow):
         super().closeEvent(ev)
 
 
+def _install_sigint_killer():
+    """让 Ctrl+C 可靠退出。qasync 的事件循环会吞掉 SIGINT（asyncio 用 set_wakeup_fd 拦截、
+    而 qasync 又不分发 add_signal_handler），SIG_DFL 也被拦。改用看门狗：先在主线程屏蔽 SIGINT
+    （之后建的线程都继承屏蔽），再开一个守护线程专门 sigwait 等它，到了就硬退出。
+    网络等都是守护线程，硬退出不留僵尸；正常收尾走关窗。"""
+    if not hasattr(signal, "pthread_sigmask"):
+        return                                       # 非 POSIX（Windows）跳过
+    try:
+        signal.signal(signal.SIGINT, signal.SIG_DFL)             # 清掉可能继承来的 SIG_IGN
+        signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
+        threading.Thread(target=lambda: (signal.sigwait({signal.SIGINT}), os._exit(130)),
+                         daemon=True, name="sigint-killer").start()
+    except (ValueError, OSError):
+        pass
+
+
 def main():
+    _install_sigint_killer()                         # 必须在建 Qt 线程前屏蔽 SIGINT
     app = QApplication(sys.argv)
     app.setStyleSheet(THEME)
     loop = QEventLoop(app)
