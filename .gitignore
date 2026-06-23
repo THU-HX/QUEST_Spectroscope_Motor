@@ -9,6 +9,9 @@ motor_config.json
 # 调试助手本机配置（url/key/默认模型，含 API key，不进版本库）
 chat_config.json
 
+# 调试助手语义操作的阈值（按现场实机调，每台不同；默认值固化在 chat_assistant.py 的 DEFAULT_OPS）
+assistant_ops.json
+
 # 自测截图产物（snap.py 渲染出来的临时 PNG）
 _*.png
 

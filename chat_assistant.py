@@ -39,6 +39,61 @@ CHAT_DEFAULTS = {
 FALLBACK_MODELS = ["gpt-5.4", "gpt-5.4-mini", "gpt-5.5",
                    "xin.deepseek-v4-pro", "xin.glm-5.1", "xin.kimi-k2.5"]
 
+# 语义操作 → 电机『绝对移动(相对中心)』目标值。可在 assistant_ops.json 覆盖（实机调试时改真实值）。
+_OPS_PATH = _HERE / "assistant_ops.json"
+DEFAULT_OPS = {
+    "shutter":        {"motor": 6, "open": 8.0,  "closed": 0.0},
+    "hartmann_left":  {"motor": 7, "open": 90.0, "closed": 0.0},
+    "hartmann_right": {"motor": 8, "open": 90.0, "closed": 0.0},
+    "cameras":        {"motor": 5, "red": 0.0,   "red_blue": 8.0},
+}
+
+
+def _load_ops() -> dict:
+    ops = {k: dict(v) for k, v in DEFAULT_OPS.items()}
+    try:
+        disk = json.loads(_OPS_PATH.read_text(encoding="utf-8"))
+        if isinstance(disk, dict):
+            for k in ops:
+                if isinstance(disk.get(k), dict):
+                    ops[k].update(disk[k])
+    except (OSError, json.JSONDecodeError):
+        pass
+    return ops
+
+
+# 给模型的工具（function-calling）。模型只表达语义意图，具体移动量由软件按 ops 配置决定。
+TOOLS = [
+    {"type": "function", "function": {
+        "name": "set_shutter",
+        "description": "开关机械快门（电机6）。open=让光通过；closed=挡住主光路。",
+        "parameters": {"type": "object", "required": ["state"], "properties": {
+            "state": {"type": "string", "enum": ["open", "closed"]}}}}},
+    {"type": "function", "function": {
+        "name": "set_hartmann_door",
+        "description": "开关哈特曼门。电机7=左门、电机8=右门；可单开一扇或两扇都开。",
+        "parameters": {"type": "object", "required": ["side", "state"], "properties": {
+            "side": {"type": "string", "enum": ["left", "right", "both"]},
+            "state": {"type": "string", "enum": ["open", "closed"]}}}}},
+    {"type": "function", "function": {
+        "name": "set_cameras",
+        "description": "切换拍摄通道（靠光栅切换装置电机5）。red=只拍红色相机；red_blue=红蓝相机都拍。",
+        "parameters": {"type": "object", "required": ["mode"], "properties": {
+            "mode": {"type": "string", "enum": ["red", "red_blue"]}}}}},
+    {"type": "function", "function": {
+        "name": "focus",
+        "description": "调焦移动。电机1=调焦结构1 x轴、2=结构1 y轴、3=结构2 x轴、4=结构2 y轴。",
+        "parameters": {"type": "object", "required": ["motor", "target"], "properties": {
+            "motor": {"type": "integer", "enum": [1, 2, 3, 4]},
+            "target": {"type": "number", "description": "相对中心目标值（同绝对移动框里填的值）"}}}}},
+    {"type": "function", "function": {
+        "name": "move_motor",
+        "description": "通用：把某电机绝对移动到指定相对中心目标值。仅当上面专用工具都不合适时才用。",
+        "parameters": {"type": "object", "required": ["motor", "target"], "properties": {
+            "motor": {"type": "integer", "minimum": 1, "maximum": 8},
+            "target": {"type": "number"}}}}},
+]
+
 _SYS_TMPL = """\
 你是「光谱仪运动机构控制软件」的调试助手，帮助操作人员使用和排查这个 PMAC/CK3M 八电机控制软件。
 
@@ -47,6 +102,11 @@ _SYS_TMPL = """\
 2. 如果《使用文档》和《人为规则》里都没有相关依据，你可以用自己的知识回答，但【必须】在回答最前面加上前缀「模型推测：」，明确提示用户这不是来自官方文档、可能不准确。
 3. 遇到「为什么电机不动 / 某个状态值或报错是什么意思」这类问题，结合下面的【当前电机状态】和【最近日志】具体分析。
 4. 用中文，简洁、面向操作人员；需要动手时给出明确步骤。
+
+【你可以执行设备操作】
+- 用户明确要求执行动作时（如"快门打开/关上""哈特曼左门打开""只拍红色相机/拍红蓝相机""调焦电机1到3""电机5移到2"），调用对应工具执行；具体移动量由软件按现场配置决定，你不必关心数值。
+- 软件自带安全闸：范围内直接下发（含自动使能），超范围会弹窗拒绝——你无需自己判断范围，也【不要】在工具之外用文字编造"已移动/已打开"。
+- 纯咨询、问问题时正常用文字回答，不要调用工具。
 
 ==== 使用文档.md ====
 {usage}
@@ -120,13 +180,18 @@ def _stream_blocking(url, key, payload, q, loop, timeout):
         loop.call_soon_threadsafe(q.put_nowait, ("error", e))
 
 
-async def stream_chat(url, key, model, messages, on_delta, timeout: float = 120.0) -> str:
-    """流式聊天。on_delta(piece) 在主循环里被调用以增量更新界面。返回完整文本。"""
+async def stream_chat(url, key, model, messages, on_delta, tools=None, timeout: float = 120.0):
+    """流式聊天。on_delta(piece) 在主循环里被调用以增量更新界面。
+    返回 (完整文本, tool_calls)；tool_calls=[{"name":..,"args":{..}}]。"""
     loop = asyncio.get_running_loop()
     q: asyncio.Queue = asyncio.Queue()
     payload = {"model": model, "stream": True, "messages": messages, "max_tokens": 4000}
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
     fut = loop.run_in_executor(None, _stream_blocking, url, key, payload, q, loop, timeout)
     full = []
+    tacc: dict = {}                                  # index -> {"name","args"}（工具调用分片累积）
     try:
         while True:
             kind, val = await q.get()
@@ -135,19 +200,36 @@ async def stream_chat(url, key, model, messages, on_delta, timeout: float = 120.
             if kind == "error":
                 raise val
             try:
-                obj = json.loads(val)
-                piece = obj["choices"][0].get("delta", {}).get("content")
+                delta = json.loads(val)["choices"][0].get("delta", {})
             except (json.JSONDecodeError, KeyError, IndexError, TypeError):
                 continue
+            piece = delta.get("content")
             if piece:
                 full.append(piece)
                 on_delta(piece)
+            for t in (delta.get("tool_calls") or []):
+                slot = tacc.setdefault(t.get("index", 0), {"name": "", "args": ""})
+                fn = t.get("function") or {}
+                if fn.get("name"):
+                    slot["name"] = fn["name"]
+                if fn.get("arguments"):
+                    slot["args"] += fn["arguments"]
     finally:
         try:
             await fut
         except Exception:
             pass
-    return "".join(full)
+    tool_calls = []
+    for i in sorted(tacc):
+        s = tacc[i]
+        if not s["name"]:
+            continue
+        try:
+            a = json.loads(s["args"]) if s["args"].strip() else {}
+        except json.JSONDecodeError:
+            a = {}
+        tool_calls.append({"name": s["name"], "args": a})
+    return "".join(full), tool_calls
 
 
 class ChatAssistant(QWidget):
@@ -342,21 +424,79 @@ class ChatAssistant(QWidget):
         self._task = asyncio.ensure_future(self._run(q, messages))
 
     async def _run(self, q: str, messages: list):
+        content, tool_calls, err = "", [], None
         try:
-            ans = await stream_chat(
+            content, tool_calls = await stream_chat(
                 self.cfg["url"], self.cfg["key"], self.cfg["model"],
-                messages, self._append_text)
-            if not ans.strip():
-                self._append_text("（无内容返回）")
+                messages, self._append_text, tools=TOOLS)
         except Exception as e:
-            self._append_html(f"<span style='color:#c0392b;'>[请求失败] {_esc(str(e))}</span>")
-            ans = ""
-        finally:
-            self._set_busy(False)
-        if ans.strip():
+            err = e
+        # 执行模型请求的设备操作（走与手动按钮同一套安全闸）
+        actions = []
+        for tc in tool_calls:
+            try:
+                actions += await self._exec_tool(tc["name"], tc["args"])
+            except Exception as e:
+                actions.append(f"执行 {tc.get('name')} 出错：{e}")
+        if err is not None:
+            self._append_html(f"<span style='color:#c0392b;'>[请求失败] {_esc(str(err))}</span>")
+        elif actions:
+            self._append_html("<br>" + "<br>".join("• " + _esc(x) for x in actions))
+        elif not content.strip():
+            self._append_text("（无内容返回）")
+        self._set_busy(False)
+        summary = content.strip()
+        if actions:
+            summary = (summary + "\n" if summary else "") + "\n".join("• " + x for x in actions)
+        if summary:
             self._history.append({"role": "user", "content": q})
-            self._history.append({"role": "assistant", "content": ans})
+            self._history.append({"role": "assistant", "content": summary})
             self._render_transcript()            # 用 markdown 重渲染整段（替换流式纯文本）
+
+    async def _exec_tool(self, name: str, args: dict) -> list:
+        """把工具调用映射成『电机 + 绝对移动目标值』，再走 MotorControl.request_abs_move
+        （同手动按钮的安全闸：范围内执行、超范围弹窗、未连接提示）。返回每步结果文案。"""
+        ops = _load_ops()                        # 每次读盘，改了 assistant_ops.json 即时生效
+        args = args or {}
+        moves = []                               # (motor, target, label)
+        try:
+            if name == "set_shutter":
+                o = ops["shutter"]; opn = args.get("state") == "open"
+                moves.append((o["motor"], o["open"] if opn else o["closed"],
+                              f"快门→{'开' if opn else '关'}"))
+            elif name == "set_hartmann_door":
+                opn = args.get("state") == "open"
+                side = args.get("side", "both")
+                for s in (["left", "right"] if side == "both" else [side]):
+                    o = ops["hartmann_" + s]
+                    moves.append((o["motor"], o["open"] if opn else o["closed"],
+                                  f"哈特曼{'左' if s == 'left' else '右'}门→{'开' if opn else '关'}"))
+            elif name == "set_cameras":
+                o = ops["cameras"]; rb = args.get("mode") == "red_blue"
+                moves.append((o["motor"], o["red_blue"] if rb else o["red"],
+                              f"拍摄{'红+蓝' if rb else '只红'}(光栅电机{o['motor']})"))
+            elif name == "focus":
+                m = int(args["motor"]); t = float(args["target"])
+                moves.append((m, t, f"调焦 电机{m}→{t}"))
+            elif name == "move_motor":
+                m = int(args["motor"]); t = float(args["target"])
+                moves.append((m, t, f"电机{m}→{t}"))
+            else:
+                return [f"未知操作：{name}"]
+        except (KeyError, ValueError, TypeError) as e:
+            return [f"操作参数有误（{name}）：{e}"]
+
+        res_map = {"ok": "已执行", "out_of_range": "超出安全范围·已弹窗拒绝",
+                   "not_connected": "未连接·请先点「连接」"}
+        out = []
+        for motor, target, label in moves:
+            mc = self.ctrl.controls.get(motor)
+            if mc is None:
+                out.append(f"{label}：无电机{motor}")
+                continue
+            r = await mc.request_abs_move(float(target))
+            out.append(f"{label}（电机{motor} 移到 {target}）：{res_map.get(r, r)}")
+        return out
 
     def _set_busy(self, busy: bool):
         self.btn_send.setEnabled(not busy)

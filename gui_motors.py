@@ -350,15 +350,24 @@ class MotorControl(QGroupBox):
         except ValueError:
             self.ctrl.log(f"电机{self.motor} Abs 不是数字: {txt!r}")
             return
+        await self.request_abs_move(pos)
+
+    async def request_abs_move(self, pos: float) -> str:
+        """绝对移动统一入口（手动按钮 + 调试助手共用）。
+        返回 'ok' | 'out_of_range' | 'not_connected'。在安全范围内直接下发（含移动前自动使能）；
+        超范围弹窗拒绝、不下发——与手动点按钮完全同一套安全闸。"""
+        if not self.ctrl.is_connected:
+            return "not_connected"
         if not (self.abs_min <= pos <= self.abs_max):
             phys = pos + self.center
             await self.ctrl.warn(
                 "范围超限",
                 f"电机{self.motor} 绝对目标 {fnum(pos)} 超出 [{fnum(self.abs_min)}, {fnum(self.abs_max)}]\n"
                 f"（对应物理 {fnum(phys)}，应在 [{fnum(self.phys_min)}, {fnum(self.phys_max)}]）\n\n已拒绝。")
-            return
+            return "out_of_range"
         await self.ctrl.run(f"#{self.motor}j={pos}", self._move_ensure_enabled,
                             self.ctrl.pmac.motor_move_abs, pos)
+        return "ok"
 
     @asyncSlot()
     async def _on_rel(self):
