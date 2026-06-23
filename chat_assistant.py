@@ -92,6 +92,27 @@ TOOLS = [
         "parameters": {"type": "object", "required": ["motor", "target"], "properties": {
             "motor": {"type": "integer", "minimum": 1, "maximum": 8},
             "target": {"type": "number"}}}}},
+    {"type": "function", "function": {
+        "name": "connect_pmac",
+        "description": "连接 PMAC 控制器（等于点界面「连接」按钮）。用户说连接PMAC/连接网络/连上等。",
+        "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {
+        "name": "disconnect_pmac", "description": "断开 PMAC 连接（点「断开」）。",
+        "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {
+        "name": "start_ethercat",
+        "description": "启动 EtherCAT（发 ECAT[0].enable）。电机5-8 使能前通常要先做。",
+        "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {
+        "name": "enable_motors",
+        "description": "使能电机。motors=\"all\" 使能全部；或电机号(可逗号分隔)如 \"5\" / \"5,6\" 使能指定电机。",
+        "parameters": {"type": "object", "required": ["motors"], "properties": {
+            "motors": {"type": "string", "description": "\"all\" 或电机号(1-8)，逗号分隔"}}}}},
+    {"type": "function", "function": {
+        "name": "disable_motors",
+        "description": "去使能电机（软急停）。motors=\"all\" 或电机号(可逗号分隔)。",
+        "parameters": {"type": "object", "required": ["motors"], "properties": {
+            "motors": {"type": "string", "description": "\"all\" 或电机号(1-8)，逗号分隔"}}}}},
 ]
 
 _SYS_TMPL = """\
@@ -101,11 +122,11 @@ _SYS_TMPL = """\
 1. 优先依据下面《使用文档》和《人为规则》的内容回答。凡是能在其中找到依据的，直接据此回答，不要加「模型推测」。
 2. 如果《使用文档》和《人为规则》里都没有相关依据，你可以用自己的知识回答，但【必须】在回答最前面加上前缀「模型推测：」，明确提示用户这不是来自官方文档、可能不准确。
 3. 遇到「为什么电机不动 / 某个状态值或报错是什么意思」这类问题，结合下面的【当前电机状态】和【最近日志】具体分析。
-4. 用中文，简洁、面向操作人员；需要动手时给出明确步骤。
+4. **极简回答**：只做问题分析 + 给结论/该怎么做。不要前言、不要复述我的问题、不要罗列无关背景，能一两句说清就别展开。用中文。
 
-【你可以执行设备操作】
-- 用户明确要求执行动作时（如"快门打开/关上""哈特曼左门打开""只拍红色相机/拍红蓝相机""调焦电机1到3""电机5移到2"），调用对应工具执行；具体移动量由软件按现场配置决定，你不必关心数值。
-- 软件自带安全闸：范围内直接下发（含自动使能），超范围会弹窗拒绝——你无需自己判断范围，也【不要】在工具之外用文字编造"已移动/已打开"。
+【你可以执行操作】
+- 用户要求执行动作时调用对应工具：连接/断开（"连接PMAC""连上""断开"）、启动EtherCAT、使能/去使能（"使能所有电机""使能电机5""去使能"）、快门开关、哈特曼门开关、切换红/红蓝相机、调焦、通用移动电机。
+- 移动量由软件按现场配置决定，你不必关心数值；软件自带安全闸（范围内直接下发含自动使能，超范围弹窗拒绝）。【不要】在工具之外用文字编造"已执行/已移动"。
 - 纯咨询、问问题时正常用文字回答，不要调用工具。
 
 ==== 使用文档.md ====
@@ -232,6 +253,29 @@ async def stream_chat(url, key, model, messages, on_delta, tools=None, timeout: 
     return "".join(full), tool_calls
 
 
+class _VResizeGrip(QFrame):
+    """横条把手：上下拖动实时改 target 控件高度（用来调对话框大小）。"""
+    def __init__(self, target, lo=90, hi=1000):
+        super().__init__()
+        self._t, self._lo, self._hi = target, lo, hi
+        self._drag = None
+        self.setFixedHeight(7)
+        self.setCursor(Qt.SizeVerCursor)
+        self.setStyleSheet("background:#d4d8e0;border-radius:3px;")
+
+    def mousePressEvent(self, e):
+        self._drag = (e.globalPosition().y(), self._t.height())
+
+    def mouseMoveEvent(self, e):
+        if self._drag:
+            y0, h0 = self._drag
+            h = int(h0 + (y0 - e.globalPosition().y()))      # 上拖变高
+            self._t.setFixedHeight(max(self._lo, min(self._hi, h)))
+
+    def mouseReleaseEvent(self, e):
+        self._drag = None
+
+
 class ChatAssistant(QWidget):
     """界面最下方的共用调试助手（可折叠）。"""
     def __init__(self, ctrl):
@@ -289,6 +333,7 @@ class ChatAssistant(QWidget):
         self.view.setFixedHeight(190)
         self.view.setStyleSheet("QTextEdit{background:#ffffff;border:1px solid #e3e6ec;border-radius:6px;}")
         self.view.setPlaceholderText("问点什么吧——例如「电机5为什么不动」「绝对移动框填的是什么值」")
+        self.grip = _VResizeGrip(self.view)      # 顶部把手：拖动实时调对话框高度
         row = QHBoxLayout()
         row.setSpacing(8)
         self.input = QLineEdit()
@@ -305,6 +350,7 @@ class ChatAssistant(QWidget):
         row.addWidget(self.input, 1)
         row.addWidget(self.btn_send)
         row.addWidget(self.btn_clear)
+        bl.addWidget(self.grip)
         bl.addWidget(self.view)
         bl.addLayout(row)
         self.body.setVisible(False)              # 默认折叠，省纵向空间
@@ -454,10 +500,31 @@ class ChatAssistant(QWidget):
             self._render_transcript()            # 用 markdown 重渲染整段（替换流式纯文本）
 
     async def _exec_tool(self, name: str, args: dict) -> list:
-        """把工具调用映射成『电机 + 绝对移动目标值』，再走 MotorControl.request_abs_move
-        （同手动按钮的安全闸：范围内执行、超范围弹窗、未连接提示）。返回每步结果文案。"""
-        ops = _load_ops()                        # 每次读盘，改了 assistant_ops.json 即时生效
+        """把工具调用落到实际操作上。控制类（连接/使能/EtherCAT）走 MainWindow.op_*；
+        移动类映射成『电机+绝对目标值』走 MotorControl.request_abs_move（同手动按钮安全闸）。"""
+        ctrl = self.ctrl
         args = args or {}
+
+        # —— 控制类操作（非移动）——
+        if name == "connect_pmac":
+            r = await ctrl.op_connect()
+            return ["已连接" if r == "ok" else "本来就连着" if r == "already" else f"连接失败：{r[5:]}"]
+        if name == "disconnect_pmac":
+            r = await ctrl.op_disconnect()
+            return ["已断开" if r == "ok" else "本来就没连"]
+        if name == "start_ethercat":
+            r = await ctrl.op_start_ethercat()
+            return ["已启动 EtherCAT" if r == "ok" else "未连接·请先连接"]
+        if name in ("enable_motors", "disable_motors"):
+            op = ctrl.op_enable if name == "enable_motors" else ctrl.op_disable
+            r = await op(args.get("motors", "all"))
+            verb = "使能" if name == "enable_motors" else "去使能"
+            if r.startswith("ok:"):
+                return [f"已{verb} 电机 {r[3:]}"]
+            return ["未连接·请先连接" if r == "not_connected" else f"电机号有误"]
+
+        # —— 移动类操作 ——
+        ops = _load_ops()                        # 每次读盘，改了 assistant_ops.json 即时生效
         moves = []                               # (motor, target, label)
         try:
             if name == "set_shutter":
@@ -490,12 +557,14 @@ class ChatAssistant(QWidget):
                    "not_connected": "未连接·请先点「连接」"}
         out = []
         for motor, target, label in moves:
-            mc = self.ctrl.controls.get(motor)
+            mc = ctrl.controls.get(motor)
             if mc is None:
                 out.append(f"{label}：无电机{motor}")
                 continue
             r = await mc.request_abs_move(float(target))
             out.append(f"{label}（电机{motor} 移到 {target}）：{res_map.get(r, r)}")
+        if any("已执行" in x for x in out):       # 真动了才提示去哪改默认移动量
+            out.append("↳ 默认移动量在 assistant_ops.json 改")
         return out
 
     def _set_busy(self, busy: bool):

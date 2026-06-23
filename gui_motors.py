@@ -1367,20 +1367,11 @@ class MainWindow(QMainWindow):
 
     @asyncSlot()
     async def _on_enable_all(self):
-        items = [(f"#{m}j/", self.pmac.motor_enable, m) for m in M.ALL_MOTORS]
-        await self.run_seq("一键使能所有电机", items)
+        await self.op_enable("all")
 
     @asyncSlot()
     async def _on_disable_all(self):
-        # 软急停：先取消在飞命令，再逐台去使能
-        if self._inflight and not self._inflight.done():
-            self._inflight.cancel()
-            try:
-                await self._inflight
-            except (asyncio.CancelledError, Exception):
-                pass
-        items = [(f"#{m}k", self.pmac.motor_disable, m) for m in M.ALL_MOTORS]
-        await self.run_seq("一键去使能所有电机", items)
+        await self.op_disable("all")
 
     async def warn(self, title: str, text: str):
         # 用窗口内浮层（_WarnOverlay）而非顶层 QMessageBox：Wayland 下顶层窗口
@@ -1418,19 +1409,37 @@ class MainWindow(QMainWindow):
     @asyncSlot()
     async def _on_connect(self):
         self.btn_connect.setEnabled(False)
+        r = await self.op_connect()
+        if r not in ("ok", "already"):
+            self.btn_connect.setEnabled(True)
+
+    @asyncSlot()
+    async def _on_disconnect(self):
+        await self.op_disconnect()
+
+    @asyncSlot()
+    async def _on_ecat(self):
+        await self.op_start_ethercat()
+
+    # ---------------- 可执行操作（手动按钮 + 调试助手共用，返回简短状态码） ----------------
+    async def op_connect(self) -> str:
+        if self.pmac.is_connected:
+            return "already"
         self.log("连接中 ...")
         try:
             await self.pmac.connect()
         except Exception as e:
             self.log(f"连接失败: {e!r}")
-            self.btn_connect.setEnabled(True)
-            return
+            return f"fail:{e}"
         self.log("已连接，启动轮询")
         self._set_connected(True)
-        self._poll_task = asyncio.create_task(self._poll_loop())
+        if not (self._poll_task and not self._poll_task.done()):
+            self._poll_task = asyncio.create_task(self._poll_loop())
+        return "ok"
 
-    @asyncSlot()
-    async def _on_disconnect(self):
+    async def op_disconnect(self) -> str:
+        if not self.pmac.is_connected:
+            return "already"
         if self._inflight and not self._inflight.done():
             self._inflight.cancel()
         if self._poll_task and not self._poll_task.done():
@@ -1444,10 +1453,52 @@ class MainWindow(QMainWindow):
         self._set_connected(False)
         if self._full_tab:
             self._full_tab.push_disconnected()   # 整机页：装置转灰
+        return "ok"
 
-    @asyncSlot()
-    async def _on_ecat(self):
+    async def op_start_ethercat(self) -> str:
+        if not self.pmac.is_connected:
+            return "not_connected"
         await self.run("ECAT[0].enable", self.pmac.ecat_enable)
+        return "ok"
+
+    def _resolve_motors(self, motors) -> list:
+        if motors in (None, "", "all", "ALL", "All", "全部"):
+            return list(M.ALL_MOTORS)
+        if isinstance(motors, (int, float)):
+            motors = [motors]
+        if isinstance(motors, str):
+            motors = [x for x in motors.replace("，", ",").split(",") if x.strip()]
+        return [int(x) for x in motors]
+
+    async def op_enable(self, motors=None) -> str:
+        if not self.pmac.is_connected:
+            return "not_connected"
+        try:
+            ms = self._resolve_motors(motors)
+        except (ValueError, TypeError):
+            return "bad_motors"
+        if not ms or any(m not in M.ALL_MOTORS for m in ms):
+            return "bad_motors"
+        await self.run_seq("使能电机", [(f"#{m}j/", self.pmac.motor_enable, m) for m in ms])
+        return "ok:" + ",".join(map(str, ms))
+
+    async def op_disable(self, motors=None) -> str:
+        if not self.pmac.is_connected:
+            return "not_connected"
+        try:
+            ms = self._resolve_motors(motors)
+        except (ValueError, TypeError):
+            return "bad_motors"
+        if not ms or any(m not in M.ALL_MOTORS for m in ms):
+            return "bad_motors"
+        if set(ms) == set(M.ALL_MOTORS) and self._inflight and not self._inflight.done():
+            self._inflight.cancel()            # 全部去使能=软急停，先取消在飞命令
+            try:
+                await self._inflight
+            except (asyncio.CancelledError, Exception):
+                pass
+        await self.run_seq("去使能电机", [(f"#{m}k", self.pmac.motor_disable, m) for m in ms])
+        return "ok:" + ",".join(map(str, ms))
 
     async def _poll_loop(self):
         fails = 0
