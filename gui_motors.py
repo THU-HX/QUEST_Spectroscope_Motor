@@ -56,6 +56,7 @@ from qasync import QEventLoop, asyncSlot
 
 from pmac import PMAC, PmacError, STATUS_FIELDS
 from viewer3d import Viewer3DWidget
+from chat_assistant import ChatAssistant
 import motors as M
 
 POLL_S = 0.5
@@ -1157,6 +1158,7 @@ class MainWindow(QMainWindow):
         self._viz_tabs: list[DeviceTab] = []        # 带 3D 的装置页（升降/快门/调焦）
         self._overview: OverviewTab | None = None
         self._warn_overlay: "_WarnOverlay | None" = None   # 窗口内居中警告浮层
+        self._last_status_all: dict = {}                   # 最近一次全 8 电机轮询（喂调试助手）
         # 日志：后台缓冲，勾选才落盘
         self._log_buffer: list[str] = []
         self._log_file = None
@@ -1224,6 +1226,10 @@ class MainWindow(QMainWindow):
         logbar.addWidget(self.chk_savelog)
         logbar.addWidget(self.log_status, stretch=1)
         root.addLayout(logbar)
+
+        # 全界面共用的「调试助手」对话框（各标签页共享，放最下面，默认折叠）
+        self.chat = ChatAssistant(self)
+        root.addWidget(self.chat)
 
         self.setCentralWidget(central)
 
@@ -1450,6 +1456,7 @@ class MainWindow(QMainWindow):
                         self._full_tab.push_disconnected()   # 连续失败视为断连 → 灰
                     await asyncio.sleep(POLL_S)
                     continue
+                self._last_status_all = st               # 缓存给调试助手
                 for m, mc in self.controls.items():
                     if m in st:
                         mc.update_status(st[m])

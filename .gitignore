@@ -6,6 +6,9 @@ __pycache__/
 # 此文件只是本机覆盖，会随显示比例滑条等改动频繁变化，不进版本库）
 motor_config.json
 
+# 调试助手本机配置（url/key/默认模型，含 API key，不进版本库）
+chat_config.json
+
 # 自测截图产物（snap.py 渲染出来的临时 PNG）
 _*.png
 
