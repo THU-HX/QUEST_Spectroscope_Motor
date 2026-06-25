@@ -40,6 +40,12 @@ CHAT_DEFAULTS = {
 FALLBACK_MODELS = ["gpt-5.4", "gpt-5.4-mini", "gpt-5.5",
                    "xin.deepseek-v4-pro", "xin.glm-5.1", "xin.kimi-k2.5"]
 
+# 安全网用：判「你下的是指令」+「模型在邀功」的关键词
+_CMD_WORDS = ("打开", "关闭", "关上", "使能", "移动", "位移", "连接", "断开",
+              "切换", "拍", "调焦", "启动", "归零", "去使能")
+_CLAIM_WORDS = ("已执行", "已移动", "移到", "移动到", "已打开", "打开了", "已关",
+                "关闭了", "已使能", "已去使能", "已连接", "已断开", "已切换", "已启动")
+
 # 语义操作 → 电机『绝对移动(相对中心)』目标值。可在 assistant_ops.json 覆盖（实机调试时改真实值）。
 _OPS_PATH = _HERE / "assistant_ops.json"
 DEFAULT_OPS = {
@@ -245,8 +251,10 @@ async def stream_chat(url, key, model, messages, on_delta, tools=None, timeout: 
             continue
         piece = delta.get("content")
         if piece:
-            full.append(piece)
-            on_delta(piece)
+            piece = piece.encode("utf-8", "ignore").decode("utf-8")  # 丢掉非法代理字符(某些本地模型乱码)
+            if piece:
+                full.append(piece)
+                on_delta(piece)
         for t in (delta.get("tool_calls") or []):
             slot = tacc.setdefault(t.get("index", 0), {"name": "", "args": ""})
             fn = t.get("function") or {}
@@ -501,16 +509,28 @@ class ChatAssistant(QWidget):
                 actions += await self._exec_tool(tc["name"], tc["args"])
             except Exception as e:
                 actions.append(f"执行 {tc.get('name')} 出错：{e}")
+        # 安全网：你下了指令、模型却没真正调用工具、还用文字声称"已执行" → 警告（弱模型常这样，
+        # 看着像做了其实没做）。只有 [无工具调用 + 你的话像指令 + 回复像在邀功] 三者同时满足才提示。
+        faked = (not tool_calls and not err
+                 and any(w in q for w in _CMD_WORDS)
+                 and any(c in content for c in _CLAIM_WORDS))
+
         if err is not None:
             self._append_html(f"<span style='color:#c0392b;'>[请求失败] {_esc(str(err))}</span>")
         elif actions:
             self._append_html("<br>" + "<br>".join("• " + _esc(x) for x in actions))
         elif not content.strip():
             self._append_text("（无内容返回）")
+        if faked:
+            self._append_html("<br><span style='color:#c0392b;'>⚠️ 上面只是模型的文字描述，"
+                              "<b>并未真正执行</b>（该模型可能不支持指令调用）。要真执行请换 "
+                              "gpt-5.4 等支持工具调用的模型。</span>")
         self._set_busy(False)
         summary = content.strip()
         if actions:
             summary = (summary + "\n" if summary else "") + "\n".join("• " + x for x in actions)
+        if faked:
+            summary += "\n⚠️ 未真正执行（模型未调用工具）"
         if summary:
             self._history.append({"role": "user", "content": q})
             self._history.append({"role": "assistant", "content": summary})
