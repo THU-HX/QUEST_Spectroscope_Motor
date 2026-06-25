@@ -14,7 +14,7 @@ import urllib.request
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QTextCursor
+from PySide6.QtGui import QTextCursor, QTextCharFormat, QColor
 from PySide6.QtWidgets import (
     QWidget, QLabel, QPushButton, QComboBox, QLineEdit, QTextEdit,
     QVBoxLayout, QHBoxLayout, QFrame,
@@ -455,14 +455,41 @@ class ChatAssistant(QWidget):
         self.view.ensureCursorVisible()
 
     def _render_transcript(self):
-        """把已完成的历史用 markdown 渲染（替换流式时的纯文本，去掉 **/### 等标记）。"""
+        """把已完成的历史用 markdown 渲染（替换流式时的纯文本，去掉 **/### 等标记），再上色。"""
         parts = []
         for msg in self._history:
             who = "你" if msg["role"] == "user" else "助手"
             parts.append(f"**{who}：** {msg['content']}")
         self.view.setMarkdown("\n\n".join(parts))
+        self._colorize()
         self.view.moveCursor(QTextCursor.End)
         self.view.ensureCursorVisible()
+
+    def _colorize(self):
+        """「模型推测」及其后内容 → 蓝色；「⚠️」警告 → 红色（都到下一轮「你：」为止）。"""
+        doc = self.view.document()
+        self._paint_from(doc, "模型推测", QColor("#1f6feb"))
+        self._paint_from(doc, "⚠️", QColor("#c0392b"))
+
+    @staticmethod
+    def _paint_from(doc, marker, color):
+        fmt = QTextCharFormat()
+        fmt.setForeground(color)
+        search = 0
+        while True:
+            c = doc.find(marker, search)
+            if c.isNull():
+                break
+            start = c.selectionStart()
+            nxt = doc.find("你：", c.selectionEnd())     # 染到下一条「你：」（下一轮）前
+            end = nxt.selectionStart() if not nxt.isNull() else doc.characterCount() - 1
+            if end <= start:
+                end = doc.characterCount() - 1
+            sel = QTextCursor(doc)
+            sel.setPosition(start)
+            sel.setPosition(end, QTextCursor.KeepAnchor)
+            sel.mergeCharFormat(fmt)
+            search = end
 
     def _clear(self):
         self._history.clear()
@@ -519,22 +546,23 @@ class ChatAssistant(QWidget):
             self._append_html(f"<span style='color:#c0392b;'>[请求失败] {_esc(str(err))}</span>")
         elif actions:
             self._append_html("<br>" + "<br>".join("• " + _esc(x) for x in actions))
-        elif not content.strip():
+        elif not content.strip() and not faked:
             self._append_text("（无内容返回）")
-        if faked:
-            self._append_html("<br><span style='color:#c0392b;'>⚠️ 上面只是模型的文字描述，"
-                              "<b>并未真正执行</b>（该模型可能不支持指令调用）。要真执行请换 "
-                              "gpt-5.4 等支持工具调用的模型。</span>")
         self._set_busy(False)
-        summary = content.strip()
-        if actions:
-            summary = (summary + "\n" if summary else "") + "\n".join("• " + x for x in actions)
+
         if faked:
-            summary += "\n⚠️ 未真正执行（模型未调用工具）"
+            # 模型只是用文字假装执行（甚至会模仿我们"…：已执行"的格式）。直接丢掉那段误导文字，
+            # 只留一句清晰警告——否则"已执行"和"未真正执行"会同时出现、自相矛盾。
+            summary = ("⚠️ 模型声称要执行操作，但并未真正调用工具、未执行任何动作"
+                       "（此模型可能不支持工具调用）。要真执行请换 gpt-5.4。")
+        else:
+            summary = content.strip()
+            if actions:
+                summary = (summary + "\n" if summary else "") + "\n".join("• " + x for x in actions)
         if summary:
             self._history.append({"role": "user", "content": q})
             self._history.append({"role": "assistant", "content": summary})
-            self._render_transcript()            # 用 markdown 重渲染整段（替换流式纯文本）
+            self._render_transcript()            # markdown 重渲染整段（替换流式纯文本）+ 上色
 
     async def _exec_tool(self, name: str, args: dict) -> list:
         """把工具调用落到实际操作上。控制类（连接/使能/EtherCAT）走 MainWindow.op_*；
